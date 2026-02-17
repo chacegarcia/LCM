@@ -54,10 +54,10 @@
         <input id="gapIn" type="text" value='0"' />
       </div>
 		
-	  <div class="field">
+	  <!-- div class="field">
         <label>Closeness Between Logos(Divisor)</label>
         <input id="Tight" type="text" value='1.5"' />
-      </div>
+	</div -->
 
       <div class="row2">
         <div class="field">
@@ -123,7 +123,7 @@
     const outWInEl = document.getElementById('outWIn');
     const outHInEl = document.getElementById('outHIn');
     const formatEl = document.getElementById('format');
-    const tght = document.getElementById('Tight');
+    //const tght = document.getElementById('Tight');
 
     const hexToggleEl = document.getElementById('hexToggle');
     const circleDiaInEl = document.getElementById('circleDiaIn');
@@ -268,7 +268,7 @@
     }
 
     function drawCheckerboardTiles(wPx, hPx, tilePx, gapPx) {
-      const stepPx = (tilePx + gapPx) / tght;
+      const stepPx = (tilePx + gapPx) / 1.5; // tght;
       const cols = Math.ceil(wPx / stepPx);
       const rows = Math.ceil(hPx / stepPx);
 
