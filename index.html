@@ -107,10 +107,16 @@
   <!-- jsPDF for PDF export -->
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/changedpi@1.0.4/dist/index.min.js"></script>
-
-
   <script>
-    const DPI = 400;
+	  // Now you can import directly from the CDN without errors
+	  import { changeDpiDataUrl } from 'https://esm.sh';
+	
+	  // Your canvas logic here...
+	  
+	  const DPI = 400;
+	  const ExPPI = changeDpiDataUrl(canvas.toDataURL(), DPI);
+  </script>
+  <script>
 
     const fileInput = document.getElementById('fileInput');
     const imgInEl = document.getElementById('imgIn');
@@ -381,7 +387,6 @@
 		  render();
 		  			// Convert canvas to data URL and add it to the PDF at the correct size
 			const dataUrl = canvas.toDataURL("image/png");
-			const ExPPI = changeDpiDataUrl(dataUrl, DPI);
 
 		  const base = `${originalFileBaseName} Random Pattern`;
 		  const fmt = formatEl.value;
