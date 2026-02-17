@@ -377,14 +377,17 @@
       a.download = filename;
       document.body.appendChild(a);
       a.click();
-      //a.remove();
+      a.remove();
       URL.revokeObjectURL(url);
     }
 
     function exportNow() 
 	{
 		  // Always render before export to make sure the content is updated
-		  render();
+		  //render();			
+			// Convert canvas to data URL and add it to the PDF at the correct size
+			const dataUrl = canvas.toDataURL("image/png");
+			//const ExPPI = changeDpiDataUrl(dataUrl, DPI);
 
 
 		  const base = `${originalFileBaseName} Random Pattern`;
@@ -420,7 +423,7 @@
 
 		  if (fmt === "png") {
 			// Export as PNG with the desired DPI (based on the canvas resolution)
-			canvas.toBlob((blob) => 
+			canvas.toBlob((blob) 
 			{
 				 dataUrl(blob, DPI).then(function(blob)
 					{
@@ -432,7 +435,7 @@
 
 		  if (fmt === "jpg") {
 			// Export as JPG with the desired DPI (based on the canvas resolution)
-			canvas.toBlob((blob) => 
+			canvas.toBlob((blob) 
 			{
 				 dataUrl(blob, DPI).then(function(blob)
 					{
@@ -458,9 +461,6 @@
 			pdf.addImage(ExPPI, "PNG", 0, 0, wPt, hPt);
 			pdf.save(`${base}.pdf`);
 		  }
-			// Convert canvas to data URL and add it to the PDF at the correct size
-			const dataUrl = canvas.toDataURL("image/png");
-			//const ExPPI = changeDpiDataUrl(dataUrl, DPI);
 		}
 		exportBtn.addEventListener('click', exportNow);
 		renderBtn.addEventListener('click', render);
