@@ -262,7 +262,7 @@
     }
 
     function drawCheckerboardTiles(wPx, hPx, tilePx, gapPx) {
-      const stepPx = tilePx + gapPx;
+      const stepPx = (tilePx + gapPx)/2;
       const cols = Math.ceil(wPx / stepPx);
       const rows = Math.ceil(hPx / stepPx);
 
@@ -310,7 +310,7 @@
     function render() {
       const wPx = Math.max(1, parseMeasureToPxOrDefault(outWInEl.value, 8.5));
       const hPx = Math.max(1, parseMeasureToPxOrDefault(outHInEl.value, 11));
-      const tilePx = Math.max(1, parseMeasureToPxOrDefault(imgInEl.value, 1)/4);
+      const tilePx = Math.max(1, parseMeasureToPxOrDefault(imgInEl.value, 1));
       const gapPx = Math.max(0, parseMeasureToPxOrDefault(gapInEl.value, 0));
 
       canvas.width = wPx;
