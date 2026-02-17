@@ -386,7 +386,7 @@
 		  // Always render before export to make sure the content is updated
 		  //render();			
 			// Convert canvas to data URL and add it to the PDF at the correct size
-			const dataUrl = canvas.toDataURL("image/png");
+			//const dataUrl = canvas.toDataURL("image/png");
 			//const ExPPI = changeDpiDataUrl(dataUrl, DPI);
 
 
@@ -425,10 +425,7 @@
 			// Export as PNG with the desired DPI (based on the canvas resolution)
 			canvas.toBlob((blob) 
 			{
-				 dataUrl(blob, DPI).then(function(blob)
-					{
-						downloadBlob(blob, `${base}.png`);
-					})
+				downloadBlob(blob, `${base}.png`);
 			}, "image/png");
 			return;
 		  }
@@ -437,10 +434,7 @@
 			// Export as JPG with the desired DPI (based on the canvas resolution)
 			canvas.toBlob((blob) 
 			{
-				 dataUrl(blob, DPI).then(function(blob)
-					{
-						downloadBlob(blob, `${base}.jpg`);
-					})
+				downloadBlob(blob, `${base}.jpg`);
 			}, "image/jpeg", 0.95);  // Adjust quality if needed
 			return;
 		  }
