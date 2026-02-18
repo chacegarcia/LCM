@@ -485,6 +485,7 @@
 			pdf.addImage(ExPPI, "PNG", 0, 0, wPt, hPt);
 			pdf.save(`${base}.pdf`);
 		  }
+		render();	
 		}
 		exportBtn.addEventListener('click', exportNow);
 		renderBtn.addEventListener('click', render);
