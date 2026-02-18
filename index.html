@@ -421,24 +421,54 @@
 
 		  // Now export based on the selected format (PNG, JPG, PDF)
 
-		  if (fmt === "png") {
-			// Export as PNG with the desired DPI (based on the canvas resolution)
-			canvas.toBlob((blob) 
-			{
-				downloadBlob(blob, `${base}.png`);
-			}, "image/png");
-			return;
-		  }
+		if (fmt === "png") {
+		    // Set the desired DPI by scaling the canvas resolution (e.g., 300 DPI)
+		    const scaleFactor = 1;  // For example, 2x for higher resolution
+		
+		    // Create a temporary canvas to scale the image
+		    const tempCanvas = document.createElement('canvas');
+		    const ctx = tempCanvas.getContext('2d');
+		
+		    // Set the size of the temporary canvas to match the original canvas, but scaled
+		    tempCanvas.width = canvas.width * scaleFactor;
+		    tempCanvas.height = canvas.height * scaleFactor;
+		
+		    // Scale and draw the original canvas onto the tempCanvas
+		    ctx.scale(scaleFactor, scaleFactor);
+		    ctx.drawImage(canvas, 0, 0);
+		
+		    // Export the scaled canvas as PNG
+		    tempCanvas.toBlob(function(blob) {
+		        downloadBlob(blob, `${base}.png`);
+		    }, "image/png");
+		
+		    return;
+		}
 
-		  if (fmt === "jpg") {
-			// Export as JPG with the desired DPI (based on the canvas resolution)
-			canvas.toBlob((blob) 
-			{
-				downloadBlob(blob, `${base}.jpg`);
-			}, "image/jpeg", 0.95);  // Adjust quality if needed
-			return;
-		  }
-
+		if (fmt === "jpg") {
+		    // Set the desired DPI by scaling the canvas resolution (e.g., 300 DPI)
+		    const scaleFactor = 1;  // For example, 2x for higher resolution
+		
+		    // Create a temporary canvas to scale the image
+		    const tempCanvas = document.createElement('canvas');
+		    const ctx = tempCanvas.getContext('2d');
+		
+		    // Set the size of the temporary canvas to match the original canvas, but scaled
+		    tempCanvas.width = canvas.width * scaleFactor;
+		    tempCanvas.height = canvas.height * scaleFactor;
+		
+		    // Scale and draw the original canvas onto the tempCanvas
+		    ctx.scale(scaleFactor, scaleFactor);
+		    ctx.drawImage(canvas, 0, 0);
+		
+		    // Export the scaled canvas as PNG
+		    tempCanvas.toBlob(function(blob) {
+		        downloadBlob(blob, `${base}.jpg`);
+		    }, "image/jpg");
+		
+		    return;
+		}
+		
 		  if (fmt === "pdf") {
 			const { jsPDF } = window.jspdf;
 
