@@ -121,20 +121,20 @@
 
   <script>
     // ---------------- PREVIEW SETTINGS ----------------
-    const DPI = 400;               // only used for parsing px->in; export is auto-tuned
+    const DPI = 200;               // only used for parsing px->in; export is auto-tuned
     const PREVIEW_IN = 6;          // preview window is 6" x 6"
     const PREVIEW_CSS_PX = 420;
-    const PREVIEW_PPI = 170;       // preview render PPI (safe on mobile)
+    const PREVIEW_PPI = 200;       // preview render PPI (safe on mobile)
 
     // ---------------- BAKED EXPORT POLICY ----------------
     // Vector stamping budget (iOS-safe):
-    const MAX_VECTOR_STAMPS = 22000;  // if more stamps than this -> raster fallback
+    const MAX_VECTOR_STAMPS = 6000;  // if more stamps than this -> raster fallback
     const MAX_TRACE_DIM_PX_CAP = 14000;
     const MIN_TRACE_DIM_PX = 800;
 
     // Trace tuning (baked):
-    const TRACE_DETAIL = 1.18;       // >1 = more detail
-    const TRACE_COLORS = 6;          // keep SVG small
+    const TRACE_DETAIL = 1.0;       // >1 = more detail
+    const TRACE_COLORS = 8;          // keep SVG small
 
     // Raster fallback tuning (baked):
     const RASTER_TILE_IN = 6;        // fewer tiles = lighter on iOS
@@ -429,7 +429,7 @@
     // ---------- VECTOR: trace ONCE to an SVG STAMP ----------
     function computeTraceMaxDimPx(tileInches) {
       // Target ~300 px per inch of tile, then clamp to iOS-safe range
-      const target = Math.round(tileInches * 300);
+      const target = Math.round(tileInches * 96);
       return clamp(target, MIN_TRACE_DIM_PX, MAX_TRACE_DIM_PX_CAP);
     }
 
