@@ -27,7 +27,7 @@
       border: 1px solid #e6e6e6; border-radius: 12px; padding: 14px; background: #fff;
       overflow: auto;
     }
-    canvas { border: 1px solid #cfcfcf; display: block; max-width: 100%; height: auto; }
+    canvas { border: 1px solid #cfcfcf; display: block; max-width: 100%; height: auto; touch-action: none; }
     .hint { font-size: 12px; opacity: 0.75; margin-bottom: 10px; }
     .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .toggleLine { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid #d9d9d9; border-radius: 10px; }
@@ -53,11 +53,6 @@
         <label>Gap around each cell (inches)</label>
         <input id="gapIn" type="text" value='0"' />
       </div>
-		
-	  <!-- div class="field">
-        <label>Closeness Between Logos(Divisor)</label>
-        <input id="Tight" type="text" value='1.5"' />
-	</div -->
 
       <div class="row2">
         <div class="field">
@@ -103,7 +98,7 @@
     <!-- RIGHT COLUMN -->
     <div class="stage">
       <div class="hint">
-        Preview canvas redraws only when you click <b>Reload Canvas</b> (or after image upload / export).
+        Preview is a <b>6&quot;×6&quot; window</b> into the full output. Drag to pan. Pinch/scroll to zoom.
       </div>
       <canvas id="canvas"></canvas>
     </div>
@@ -111,160 +106,269 @@
 
   <!-- jsPDF for PDF export -->
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-  <!-- <script type="module" src="https://github.com/chacegarcia/LCM/index.js"></script> -->
 
-<script>
-  const DPI = 400;                 // export DPI (true pixels = inches * DPI)
-  const PREVIEW_IN = 6;            // preview canvas represents 6" x 6" space
-  const PREVIEW_CSS_PX = 420;      // how big the preview looks on screen (pick any)
+  <script>
+    // ---------------- SETTINGS ----------------
+    const DPI = 400;               // export DPI (true output pixels = inches * DPI)
+    const PREVIEW_IN = 6;          // preview window is 6" x 6" (in output inches)
+    const PREVIEW_CSS_PX = 420;    // visual size of the preview on screen
+    const PREVIEW_PPI = 150;       // how many pixels per inch to use for preview rendering (SAFE ON MOBILE)
+		const GAP_REDUCE = 1.5;        // makes the spacing between tiles smaller
+    // ------------------------------------------------
 
-  const fileInput = document.getElementById('fileInput');
-  const imgInEl = document.getElementById('imgIn');
-  const gapInEl = document.getElementById('gapIn');
-  const outWInEl = document.getElementById('outWIn');
-  const outHInEl = document.getElementById('outHIn');
-  const formatEl = document.getElementById('format');
+    const fileInput = document.getElementById('fileInput');
+    const imgInEl = document.getElementById('imgIn');
+    const gapInEl = document.getElementById('gapIn');
+    const outWInEl = document.getElementById('outWIn');
+    const outHInEl = document.getElementById('outHIn');
+    const formatEl = document.getElementById('format');
 
-  const hexToggleEl = document.getElementById('hexToggle');
-  const circleDiaInEl = document.getElementById('circleDiaIn');
+    const hexToggleEl = document.getElementById('hexToggle');
+    const circleDiaInEl = document.getElementById('circleDiaIn');
 
-  const renderBtn = document.getElementById('renderBtn');
-  const exportBtn = document.getElementById('exportBtn');
+    const renderBtn = document.getElementById('renderBtn');
+    const exportBtn = document.getElementById('exportBtn');
 
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
 
-  const imgInfo = document.getElementById('imgInfo');
-  const renderInfo = document.getElementById('renderInfo');
+    const imgInfo = document.getElementById('imgInfo');
+    const renderInfo = document.getElementById('renderInfo');
 
-  // Cache the original upload
-  let originalBitmap = null; // ImageBitmap or HTMLImageElement
-  let originalMeta = null;   // { w, h }
-  let originalFileBaseName = "Artwork";
+    // Cache the original upload
+    let originalBitmap = null; // ImageBitmap or HTMLImageElement
+    let originalMeta = null;   // { w, h }
+    let originalFileBaseName = "Artwork";
 
-  // ---------- units parsing ----------
-  function tryParseToInches(text) {
-    const raw = (text ?? "").toString().trim().toLowerCase();
-    if (!raw) return null;
-    const cleaned = raw.replace(/\s+/g, "");
+    // Preview camera (in OUTPUT inches)
+    const previewCam = {
+      xIn: 0,
+      yIn: 0,
+      zoom: 1 // 1 => window is 6"x6"; 2 => window is 3"x3" (zoom in)
+    };
 
-    // px: 400px  -> inches = px / DPI
-    const pxMatch = cleaned.match(/^([0-9]*\.?[0-9]+)px$/);
-    if (pxMatch) {
-      const px = Number(pxMatch[1]);
-      return Number.isFinite(px) ? (px / DPI) : null;
-    }
+    // -------- unit parsing: return inches (supports px or inches) --------
+    function tryParseToInches(text) {
+      const raw = (text ?? "").toString().trim().toLowerCase();
+      if (!raw) return null;
+      const cleaned = raw.replace(/\s+/g, "");
 
-    // inches: 2, 2", 2in, .5"
-    const inchMatch = cleaned.match(/^([0-9]*\.?[0-9]+)(in|inch|inches|")?$/);
-    if (inchMatch) {
-      const inches = Number(inchMatch[1]);
-      return Number.isFinite(inches) ? inches : null;
-    }
-    return null;
-  }
-
-  function parseInchesOrDefault(text, defIn) {
-    const v = tryParseToInches(text);
-    return (v === null) ? defIn : v;
-  }
-
-  function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
-
-  // ---------- image load ----------
-  async function loadAndCacheOriginal(file) {
-    originalFileBaseName = (file.name || "Artwork").replace(/\.[^/.]+$/, "");
-
-    if (originalBitmap && typeof originalBitmap.close === "function") {
-      try { originalBitmap.close(); } catch {}
-    }
-    originalBitmap = null;
-    originalMeta = null;
-
-    const url = URL.createObjectURL(file);
-    try {
-      if ("createImageBitmap" in window) {
-        const blob = await fetch(url).then(r => r.blob());
-        const bmp = await createImageBitmap(blob);
-        originalBitmap = bmp;
-        originalMeta = { w: bmp.width, h: bmp.height };
-        imgInfo.textContent = `Loaded: ${bmp.width}×${bmp.height}px (cached as ImageBitmap).`;
-        return;
+      const pxMatch = cleaned.match(/^([0-9]*\.?[0-9]+)px$/);
+      if (pxMatch) {
+        const px = Number(pxMatch[1]);
+        return Number.isFinite(px) ? (px / DPI) : null;
       }
 
-      await new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => {
-          originalBitmap = img;
-          originalMeta = {
-            w: img.naturalWidth || img.width,
-            h: img.naturalHeight || img.height
-          };
-          imgInfo.textContent = `Loaded: ${originalMeta.w}×${originalMeta.h}px (cached as Image).`;
-          resolve();
-        };
-        img.onerror = reject;
-        img.src = url;
-      });
-    } finally {
-      URL.revokeObjectURL(url);
+      const inchMatch = cleaned.match(/^([0-9]*\.?[0-9]+)(in|inch|inches|")?$/);
+      if (inchMatch) {
+        const inches = Number(inchMatch[1]);
+        return Number.isFinite(inches) ? inches : null;
+      }
+
+      return null;
     }
-  }
 
-  fileInput.addEventListener("change", async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    function parseInchesOrDefault(text, defIn) {
+      const v = tryParseToInches(text);
+      return (v === null) ? defIn : v;
+    }
 
-    imgInfo.textContent = "Loading...";
-    try {
-      await loadAndCacheOriginal(file);
-      renderPreview();
-    } catch (err) {
-      console.error(err);
+    function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+
+    function clampPreviewCam(outWIn, outHIn) {
+      const viewWIn = PREVIEW_IN / previewCam.zoom;
+      const viewHIn = PREVIEW_IN / previewCam.zoom;
+
+      const maxX = Math.max(0, outWIn - viewWIn);
+      const maxY = Math.max(0, outHIn - viewHIn);
+
+      previewCam.xIn = clamp(previewCam.xIn, 0, maxX);
+      previewCam.yIn = clamp(previewCam.yIn, 0, maxY);
+    }
+
+    // -------- image load/cache --------
+    async function loadAndCacheOriginal(file) {
+      originalFileBaseName = (file.name || "Artwork").replace(/\.[^/.]+$/, "");
+
+      if (originalBitmap && typeof originalBitmap.close === "function") {
+        try { originalBitmap.close(); } catch {}
+      }
       originalBitmap = null;
       originalMeta = null;
-      imgInfo.textContent = "Failed to load image.";
+
+      const url = URL.createObjectURL(file);
+      try {
+        if ("createImageBitmap" in window) {
+          const blob = await fetch(url).then(r => r.blob());
+          const bmp = await createImageBitmap(blob);
+          originalBitmap = bmp;
+          originalMeta = { w: bmp.width, h: bmp.height };
+          imgInfo.textContent = `Loaded: ${bmp.width}×${bmp.height}px (cached as ImageBitmap).`;
+          return;
+        }
+
+        await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            originalBitmap = img;
+            originalMeta = {
+              w: img.naturalWidth || img.width,
+              h: img.naturalHeight || img.height
+            };
+            imgInfo.textContent = `Loaded: ${originalMeta.w}×${originalMeta.h}px (cached as Image).`;
+            resolve();
+          };
+          img.onerror = reject;
+          img.src = url;
+        });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     }
-  });
 
-  // ---------- core renderer (draws in INCHES) ----------
-  // This is the key: one renderer used for preview AND export.
-  function renderArtworkToContext(targetCtx, pxPerIn, outWIn, outHIn, tileIn, gapIn, hexOn, circleDiaIn) {
-    const wPx = Math.max(1, Math.round(outWIn * pxPerIn));
-    const hPx = Math.max(1, Math.round(outHIn * pxPerIn));
+    fileInput.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
 
-    // Clear + white background
-    targetCtx.setTransform(1, 0, 0, 1, 0, 0);
-    targetCtx.clearRect(0, 0, wPx, hPx);
-    targetCtx.fillStyle = "#fff";
-    targetCtx.fillRect(0, 0, wPx, hPx);
+      imgInfo.textContent = "Loading...";
+      try {
+        await loadAndCacheOriginal(file);
+        // reset camera to top-left on new load (optional; change to center if you want)
+        previewCam.xIn = 0;
+        previewCam.yIn = 0;
+        previewCam.zoom = 1;
+        renderPreview();
+      } catch (err) {
+        console.error(err);
+        originalBitmap = null;
+        originalMeta = null;
+        imgInfo.textContent = "Failed to load image.";
+      }
+    });
 
-    // Draw using inch-units: transform inches -> pixels
-    targetCtx.setTransform(pxPerIn, 0, 0, pxPerIn, 0, 0);
-    targetCtx.imageSmoothingEnabled = true;
-    targetCtx.imageSmoothingQuality = "high";
+    // -------- preview canvas setup (always 6"x6") --------
+    function setupPreviewCanvas() {
+      canvas.style.width = PREVIEW_CSS_PX + "px";
+      canvas.style.height = PREVIEW_CSS_PX + "px";
 
-    // Helpers in inch-space
-    function drawLetterboxedTileAtIn(xIn, yIn, tileInches) {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(PREVIEW_CSS_PX * dpr);
+      canvas.height = Math.round(PREVIEW_CSS_PX * dpr);
+
+      ctx.setTransform(1,0,0,1,0,0);
+    }
+
+    // -------- core: draw a letterboxed tile at (x,y) in INCHES --------
+    function drawLetterboxedTileAtIn(targetCtx, pxPerIn, xIn, yIn, tileIn) {
       if (!originalBitmap || !originalMeta) return;
 
       const srcW = originalMeta.w;
       const srcH = originalMeta.h;
-
-      const tilePx = tileInches * pxPerIn;
+      const tilePx = tileIn * pxPerIn;
 
       const scale = Math.min(tilePx / srcW, tilePx / srcH);
-      const drawW = (srcW * scale) / pxPerIn; // back to inches for drawImage transform
-      const drawH = (srcH * scale) / pxPerIn;
+      const drawWIn = (srcW * scale) / pxPerIn;
+      const drawHIn = (srcH * scale) / pxPerIn;
 
-      const dx = xIn + (tileInches - drawW) / 2;
-      const dy = yIn + (tileInches - drawH) / 2;
+      const dx = xIn + (tileIn - drawWIn) / 2;
+      const dy = yIn + (tileIn - drawHIn) / 2;
 
-      targetCtx.drawImage(originalBitmap, dx, dy, drawW, drawH);
+      targetCtx.drawImage(originalBitmap, dx, dy, drawWIn, drawHIn);
     }
 
-    function drawCheckerboardTilesIn() {
-      if (!originalBitmap || !originalMeta) return null;
+    // -------- render ONLY a viewport (camera window) --------
+    function renderArtworkViewport(targetCtx, pxPerIn, cfg) {
+      const { outWIn, outHIn, tileIn, gapIn, hexOn, circleDiaIn, camXIn, camYIn, viewWIn, viewHIn } = cfg;
+
+      const wPx = Math.max(1, Math.round(viewWIn * pxPerIn));
+      const hPx = Math.max(1, Math.round(viewHIn * pxPerIn));
+
+      // clear + background
+      targetCtx.setTransform(1,0,0,1,0,0);
+      targetCtx.clearRect(0,0,wPx,hPx);
+      targetCtx.fillStyle = "#fff";
+      targetCtx.fillRect(0,0,wPx,hPx);
+
+      // inches -> pixels
+      targetCtx.setTransform(pxPerIn, 0, 0, pxPerIn, 0, 0);
+      targetCtx.imageSmoothingEnabled = true;
+      targetCtx.imageSmoothingQuality = "high";
+
+      const stepIn = (tileIn + gapIn) / GAP_REDUCE;
+
+      // Only iterate tiles that could be visible (plus a small buffer)
+      const startC = Math.floor(camXIn / stepIn) - 2;
+      const startR = Math.floor(camYIn / stepIn) - 2;
+      const endC   = Math.ceil((camXIn + viewWIn) / stepIn) + 2;
+      const endR   = Math.ceil((camYIn + viewHIn) / stepIn) + 2;
+
+      let approxCols = Math.max(0, endC - startC);
+      let approxRows = Math.max(0, endR - startR);
+
+      // checkerboard
+      for (let r = startR; r < endR; r++) {
+        for (let c = startC; c < endC; c++) {
+          if (((r + c) % 2) !== 0) continue;
+
+          const xFull = c * stepIn;
+          const yFull = r * stepIn;
+
+          // full output -> viewport local
+          const x = xFull - camXIn;
+          const y = yFull - camYIn;
+
+          // quick reject if outside viewport
+          if (x > viewWIn || y > viewHIn || x + tileIn < 0 || y + tileIn < 0) continue;
+
+          drawLetterboxedTileAtIn(targetCtx, pxPerIn, x, y, tileIn);
+        }
+      }
+
+      // hex overlay (viewport-local but aligned to full pattern)
+      if (hexOn) {
+        const dia = circleDiaIn;
+        const rr = dia / 2;
+        const xStep = dia;
+        const yStep = dia * Math.sqrt(3) / 2;
+
+        targetCtx.save();
+        targetCtx.lineWidth = Math.max(1/pxPerIn, 0.01);
+        targetCtx.globalAlpha = 0.65;
+
+        let row = Math.floor((camYIn - rr) / yStep);
+        for (let cyFull = row * yStep; cyFull <= camYIn + viewHIn + rr; cyFull += yStep, row++) {
+          const xOffset = (row % 2 === 0) ? 0 : xStep / 2;
+          let col = Math.floor((camXIn - rr - xOffset) / xStep);
+
+          for (let cxFull = col * xStep + xOffset; cxFull <= camXIn + viewWIn + rr; cxFull += xStep) {
+            const cx = cxFull - camXIn;
+            const cy = cyFull - camYIn;
+
+            targetCtx.beginPath();
+            targetCtx.arc(cx, cy, rr, 0, Math.PI * 2);
+            targetCtx.stroke();
+          }
+        }
+
+        targetCtx.restore();
+      }
+
+      return { wPx, hPx, approxCols, approxRows, stepIn };
+    }
+
+    // -------- render FULL output (export only) --------
+    function renderArtworkFull(targetCtx, pxPerIn, outWIn, outHIn, tileIn, gapIn, hexOn, circleDiaIn) {
+      const wPx = Math.max(1, Math.round(outWIn * pxPerIn));
+      const hPx = Math.max(1, Math.round(outHIn * pxPerIn));
+
+      targetCtx.setTransform(1,0,0,1,0,0);
+      targetCtx.clearRect(0,0,wPx,hPx);
+      targetCtx.fillStyle = "#fff";
+      targetCtx.fillRect(0,0,wPx,hPx);
+
+      targetCtx.setTransform(pxPerIn,0,0,pxPerIn,0,0);
+      targetCtx.imageSmoothingEnabled = true;
+      targetCtx.imageSmoothingQuality = "high";
 
       const stepIn = (tileIn + gapIn) / 1.5;
       const cols = Math.ceil(outWIn / stepIn);
@@ -273,216 +377,258 @@
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           if (((r + c) % 2) !== 0) continue;
-
           const xIn = c * stepIn;
           const yIn = r * stepIn;
           if (xIn > outWIn || yIn > outHIn) continue;
-
-          drawLetterboxedTileAtIn(xIn, yIn, tileIn);
-        }
-      }
-      return { cols, rows, stepIn };
-    }
-
-    function drawHexCircleOverlayIn() {
-      const dia = circleDiaIn;
-      const r = dia / 2;
-      const xStep = dia;
-      const yStep = dia * Math.sqrt(3) / 2;
-
-      targetCtx.save();
-      targetCtx.lineWidth = Math.max(1 / pxPerIn, 0.01); // ~0.01" min
-      targetCtx.globalAlpha = 0.65;
-
-      const startY = -r;
-      let row = 0;
-
-      for (let cy = startY; cy <= outHIn + r; cy += yStep, row++) {
-        const xOffset = (row % 2 === 0) ? 0 : xStep / 2;
-        const startX = -r + xOffset;
-
-        for (let cx = startX; cx <= outWIn + r; cx += xStep) {
-          targetCtx.beginPath();
-          targetCtx.arc(cx, cy, r, 0, Math.PI * 2);
-          targetCtx.stroke();
+          drawLetterboxedTileAtIn(targetCtx, pxPerIn, xIn, yIn, tileIn);
         }
       }
 
-      targetCtx.restore();
+      if (hexOn) {
+        const dia = circleDiaIn;
+        const rr = dia / 2;
+        const xStep = dia;
+        const yStep = dia * Math.sqrt(3)/2;
+
+        targetCtx.save();
+        targetCtx.lineWidth = Math.max(1/pxPerIn, 0.01);
+        targetCtx.globalAlpha = 0.65;
+
+        const startY = -rr;
+        let row = 0;
+        for (let cy = startY; cy <= outHIn + rr; cy += yStep, row++) {
+          const xOffset = (row % 2 === 0) ? 0 : xStep/2;
+          const startX = -rr + xOffset;
+          for (let cx = startX; cx <= outWIn + rr; cx += xStep) {
+            targetCtx.beginPath();
+            targetCtx.arc(cx, cy, rr, 0, Math.PI*2);
+            targetCtx.stroke();
+          }
+        }
+
+        targetCtx.restore();
+      }
+
+      return { cols, rows, stepIn, wPx, hPx };
     }
 
-    const tileMeta = drawCheckerboardTilesIn();
-    if (hexOn) drawHexCircleOverlayIn();
+    // -------- PREVIEW RENDER (viewport only; safe on mobile) --------
+    function renderPreview() {
+      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+      const tileIn = parseInchesOrDefault(imgInEl.value, 1);
+      const gapIn  = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
+      const hexOn  = !!hexToggleEl.checked;
+      const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
 
-    // return info for UI
-    return { wPx, hPx, tileMeta };
-  }
+      // clamp camera to output bounds
+      clampPreviewCam(outWIn, outHIn);
 
-  // ---------- preview setup (6" x 6") ----------
-  function setupPreviewCanvas() {
-    canvas.style.width = PREVIEW_CSS_PX + "px";
-    canvas.style.height = PREVIEW_CSS_PX + "px";
+      setupPreviewCanvas();
 
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(PREVIEW_CSS_PX * dpr);
-    canvas.height = Math.round(PREVIEW_CSS_PX * dpr);
+      // camera window size (in output inches)
+      const viewWIn = PREVIEW_IN / previewCam.zoom;
+      const viewHIn = PREVIEW_IN / previewCam.zoom;
 
-    // draw in device pixels; we'll control transforms ourselves
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    return { dpr };
-  }
+      // offscreen for viewport only (bounded)
+      const off = document.createElement("canvas");
+      off.width  = Math.max(1, Math.round(viewWIn * PREVIEW_PPI));
+      off.height = Math.max(1, Math.round(viewHIn * PREVIEW_PPI));
+      const octx = off.getContext("2d");
 
-  function renderPreview() {
-    const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
-    const outHIn = parseInchesOrDefault(outHInEl.value, 11);
-    const tileIn = parseInchesOrDefault(imgInEl.value, 1);
-    const gapIn = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
-
-    const hexOn = !!hexToggleEl.checked;
-    const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
-
-    const { dpr } = setupPreviewCanvas();
-
-    // preview “pixels per inch” (in device pixels) for a 6" wide preview
-    const previewPxPerIn = (canvas.width / PREVIEW_IN);
-
-    // Fit the *output* into the 6"x6" preview area (letterbox)
-    const fitScale = Math.min(PREVIEW_IN / outWIn, PREVIEW_IN / outHIn);
-    const drawWIn = outWIn * fitScale;
-    const drawHIn = outHIn * fitScale;
-    const offsetXIn = (PREVIEW_IN - drawWIn) / 2;
-    const offsetYIn = (PREVIEW_IN - drawHIn) / 2;
-
-    // Clear preview background
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Now render the artwork into a virtual output-size surface,
-    // but mapped into the 6"x6" preview by adjusting pxPerIn and translating.
-    // We'll do this by temporarily shifting origin and scaling inches.
-    ctx.save();
-    // inches -> device pixels, with fit scale and offset
-    ctx.setTransform(previewPxPerIn, 0, 0, previewPxPerIn, 0, 0);
-    ctx.translate(offsetXIn, offsetYIn);
-    ctx.scale(fitScale, fitScale);
-
-    // Use the core renderer with the preview's pxPerIn in the *current* transform:
-    // Our core renderer sets its own transform, so instead we render to an offscreen
-    // at preview resolution of the OUTPUT and then draw it into the transformed preview.
-    ctx.restore();
-
-    // Offscreen just for preview-of-output (fast enough, still not your “export backend”)
-    const prevOut = document.createElement("canvas");
-    const prevPxPerInOut = previewPxPerIn * fitScale;
-    prevOut.width = Math.max(1, Math.round(outWIn * prevPxPerInOut));
-    prevOut.height = Math.max(1, Math.round(outHIn * prevPxPerInOut));
-    const pctx = prevOut.getContext("2d");
-
-    const info = renderArtworkToContext(
-      pctx,
-      prevPxPerInOut,
-      outWIn, outHIn,
-      tileIn, gapIn,
-      hexOn, circleDiaIn
-    );
-
-    // Draw into preview canvas letterboxed
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    const dx = Math.round(offsetXIn * previewPxPerIn);
-    const dy = Math.round(offsetYIn * previewPxPerIn);
-    const dw = Math.round(drawWIn * previewPxPerIn);
-    const dh = Math.round(drawHIn * previewPxPerIn);
-    ctx.drawImage(prevOut, dx, dy, dw, dh);
-
-    // UI text
-    const parts = [];
-    parts.push(`Preview: ${PREVIEW_IN}"×${PREVIEW_IN}" (letterboxed).`);
-    parts.push(`Output: ${outWIn.toFixed(2)}×${outHIn.toFixed(2)} in.`);
-    parts.push(`Tile: ${tileIn.toFixed(2)}". Gap: ${gapIn.toFixed(2)}".`);
-    parts.push(`Export DPI: ${DPI}. Export pixels: ${Math.round(outWIn*DPI)}×${Math.round(outHIn*DPI)}.`);
-    if (originalMeta) parts.push(`Source: ${originalMeta.w}×${originalMeta.h}px.`);
-    else parts.push(`Upload an image to see tiles.`);
-    if (info?.tileMeta) parts.push(`Grid approx: ${info.tileMeta.cols}×${info.tileMeta.rows}.`);
-    parts.push(hexOn ? `Hex overlay ON (${circleDiaIn.toFixed(2)}").` : `Hex overlay OFF.`);
-    renderInfo.textContent = parts.join(" ");
-  }
-
-  // ---------- export backend renderer ----------
-  function downloadBlob(blob, filename) {
-    const a = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1500);
-  }
-
-  async function exportNow() {
-    // Always refresh preview (but export uses backend render)
-    renderPreview();
-
-    const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
-    const outHIn = parseInchesOrDefault(outHInEl.value, 11);
-    const tileIn = parseInchesOrDefault(imgInEl.value, 1);
-    const gapIn = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
-
-    const hexOn = !!hexToggleEl.checked;
-    const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
-
-    const fmt = formatEl.value;
-    const base = `${originalFileBaseName} Random Pattern`;
-
-    // Backend/offscreen canvas at TRUE export DPI
-    const exp = document.createElement("canvas");
-    exp.width = Math.max(1, Math.round(outWIn * DPI));
-    exp.height = Math.max(1, Math.round(outHIn * DPI));
-    const ectx = exp.getContext("2d");
-
-    renderArtworkToContext(
-      ectx,
-      DPI,
-      outWIn, outHIn,
-      tileIn, gapIn,
-      hexOn, circleDiaIn
-    );
-
-    if (fmt === "png") {
-      exp.toBlob((blob) => blob && downloadBlob(blob, `${base}.png`), "image/png", 1.0);
-      return;
-    }
-
-    if (fmt === "jpg") {
-      exp.toBlob((blob) => blob && downloadBlob(blob, `${base}.jpg`), "image/jpeg", 0.95);
-      return;
-    }
-
-    if (fmt === "pdf") {
-      const { jsPDF } = window.jspdf;
-
-      // Use inches directly so page size is correct
-      const pdf = new jsPDF({
-        orientation: (outWIn >= outHIn) ? "landscape" : "portrait",
-        unit: "in",
-        format: [outWIn, outHIn]
+      const meta = renderArtworkViewport(octx, PREVIEW_PPI, {
+        outWIn, outHIn, tileIn, gapIn, hexOn, circleDiaIn,
+        camXIn: previewCam.xIn,
+        camYIn: previewCam.yIn,
+        viewWIn,
+        viewHIn
       });
 
-      const dataUrl = exp.toDataURL("image/png"); // backend render
-      pdf.addImage(dataUrl, "PNG", 0, 0, outWIn, outHIn);
-      pdf.save(`${base}.pdf`);
-      return;
+      // draw to visible preview
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
+
+      // info
+      const expWpx = Math.round(outWIn * DPI);
+      const expHpx = Math.round(outHIn * DPI);
+
+      const parts = [];
+      parts.push(`Preview window: ${viewWIn.toFixed(2)}"×${viewHIn.toFixed(2)}" (zoom ${previewCam.zoom.toFixed(2)}×).`);
+      parts.push(`Pan: x=${previewCam.xIn.toFixed(2)}", y=${previewCam.yIn.toFixed(2)}".`);
+      parts.push(`Output: ${outWIn.toFixed(2)}×${outHIn.toFixed(2)} in → Export ${expWpx}×${expHpx}px @ ${DPI} DPI.`);
+      parts.push(`Tile: ${tileIn.toFixed(2)}". Gap: ${gapIn.toFixed(2)}".`);
+      if (originalMeta) parts.push(`Source: ${originalMeta.w}×${originalMeta.h}px.`);
+      else parts.push(`Upload an image to see tiles.`);
+      parts.push(hexOn ? `Hex overlay ON (${circleDiaIn.toFixed(2)}").` : `Hex overlay OFF.`);
+      parts.push(`Viewport tiles checked ~ ${meta.approxCols}×${meta.approxRows}.`);
+      renderInfo.textContent = parts.join(" ");
     }
-  }
 
-  // Buttons
-  exportBtn.addEventListener('click', exportNow);
-  renderBtn.addEventListener('click', renderPreview);
+    // -------- DOWNLOAD HELPERS --------
+    function downloadBlob(blob, filename) {
+      const a = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+    }
 
-  // Initial preview
-  renderPreview();
-</script>
+    // -------- EXPORT (backend/offscreen, true DPI; unaffected by pan/zoom) --------
+    async function exportNow() {
+      // keep preview up-to-date, but export ignores previewCam
+      renderPreview();
+
+      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+      const tileIn = parseInchesOrDefault(imgInEl.value, 1);
+      const gapIn  = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
+      const hexOn  = !!hexToggleEl.checked;
+      const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
+
+      const fmt = formatEl.value;
+      const base = `${originalFileBaseName} Random Pattern`;
+
+      const exp = document.createElement("canvas");
+      exp.width  = Math.max(1, Math.round(outWIn * DPI));
+      exp.height = Math.max(1, Math.round(outHIn * DPI));
+      const ectx = exp.getContext("2d");
+
+      renderArtworkFull(ectx, DPI, outWIn, outHIn, tileIn, gapIn, hexOn, circleDiaIn);
+
+      if (fmt === "png") {
+        exp.toBlob((blob) => blob && downloadBlob(blob, `${base}.png`), "image/png", 1.0);
+        return;
+      }
+
+      if (fmt === "jpg") {
+        exp.toBlob((blob) => blob && downloadBlob(blob, `${base}.jpg`), "image/jpeg", 0.95);
+        return;
+      }
+
+      if (fmt === "pdf") {
+        const { jsPDF } = window.jspdf;
+
+        const pdf = new jsPDF({
+          orientation: (outWIn >= outHIn) ? "landscape" : "portrait",
+          unit: "in",
+          format: [outWIn, outHIn]
+        });
+
+        const dataUrl = exp.toDataURL("image/png");
+        pdf.addImage(dataUrl, "PNG", 0, 0, outWIn, outHIn);
+        pdf.save(`${base}.pdf`);
+        return;
+      }
+    }
+
+    // -------- PAN + ZOOM (preview only) --------
+    // Drag to pan
+    let isPanning = false;
+    let panStart = null;
+
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      isPanning = true;
+      panStart = { x: e.clientX, y: e.clientY, camX: previewCam.xIn, camY: previewCam.yIn };
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      if (!isPanning || !panStart) return;
+
+      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+
+      const rect = canvas.getBoundingClientRect();
+      const pxPerInCss = rect.width / PREVIEW_IN;
+
+      const dxInPreview = (e.clientX - panStart.x) / pxPerInCss;
+      const dyInPreview = (e.clientY - panStart.y) / pxPerInCss;
+
+      const dxOut = dxInPreview / previewCam.zoom;
+      const dyOut = dyInPreview / previewCam.zoom;
+
+      previewCam.xIn = panStart.camX - dxOut;
+      previewCam.yIn = panStart.camY - dyOut;
+
+      clampPreviewCam(outWIn, outHIn);
+      renderPreview();
+    });
+
+    function endPan() {
+      isPanning = false;
+      panStart = null;
+    }
+    canvas.addEventListener("pointerup", endPan);
+    canvas.addEventListener("pointercancel", endPan);
+
+    // Wheel zoom (desktop/trackpad)
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+
+      const factor = (e.deltaY < 0) ? 1.12 : (1 / 1.12);
+      previewCam.zoom = clamp(previewCam.zoom * factor, 1, 8);
+
+      clampPreviewCam(outWIn, outHIn);
+      renderPreview();
+    }, { passive: false });
+
+    // Pinch zoom (mobile) using two pointers
+    const activePointers = new Map(); // id -> {x,y}
+    let pinchStart = null;
+
+    function dist(a, b) {
+      const dx = a.x - b.x, dy = a.y - b.y;
+      return Math.hypot(dx, dy);
+    }
+
+    canvas.addEventListener("pointerdown", (e) => {
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (activePointers.size === 2) {
+        const pts = Array.from(activePointers.values());
+        pinchStart = { d: dist(pts[0], pts[1]), zoom: previewCam.zoom };
+      }
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      if (!activePointers.has(e.pointerId)) return;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (activePointers.size === 2 && pinchStart) {
+        const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+        const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+
+        const pts = Array.from(activePointers.values());
+        const dNow = dist(pts[0], pts[1]);
+        if (pinchStart.d > 0) {
+          const ratio = dNow / pinchStart.d;
+          previewCam.zoom = clamp(pinchStart.zoom * ratio, 1, 8);
+          clampPreviewCam(outWIn, outHIn);
+          renderPreview();
+        }
+      }
+    });
+
+    canvas.addEventListener("pointerup", (e) => {
+      activePointers.delete(e.pointerId);
+      if (activePointers.size < 2) pinchStart = null;
+    });
+    canvas.addEventListener("pointercancel", (e) => {
+      activePointers.delete(e.pointerId);
+      if (activePointers.size < 2) pinchStart = null;
+    });
+
+    // -------- Buttons --------
+    renderBtn.addEventListener('click', renderPreview);
+    exportBtn.addEventListener('click', exportNow);
+
+    // Initial draw
+    renderPreview();
+  </script>
 </body>
 </html>
