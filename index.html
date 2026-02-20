@@ -117,15 +117,15 @@
 
     // ---------------- BAKED EXPORT POLICY ----------------
     // iOS-safe vector stamp budget (bigger than this gets slow/crashy)
-    const MAX_VECTOR_STAMPS = 2200;
+    const MAX_VECTOR_STAMPS = 6000;
 
     // Trace size bounds (iOS-safe)
     const MAX_TRACE_DIM_PX_CAP = 1800;
     const MIN_TRACE_DIM_PX = 900;
 
     // Trace tuning (for transparent PNG logos)
-    const TRACE_DETAIL = 1.05;     // stability > detail (prevents "glitchy")
-    const TRACE_COLORS = 2;        // IMPORTANT: alpha-mask trace is 2-color
+    const TRACE_DETAIL = 1.1;     // stability > detail (prevents "glitchy")
+    const TRACE_COLORS = 6;        // IMPORTANT: alpha-mask trace is 2-color
 
     // Raster fallback tuning (baked)
     const RASTER_TILE_IN = 6;
@@ -477,7 +477,7 @@
       tctx.putImageData(img, 0, 0);
 
       const options = {
-        numberofcolors: 2,
+        numberofcolors: 8,
         colorsampling: 0,
         colorquantcycles: 1,
         scale: 1,
