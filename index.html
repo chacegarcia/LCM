@@ -479,12 +479,22 @@
     options
   );
 
-  // Strip chroma-key background shapes from the SVG
-  svgStr = svgStr
-    .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
-    .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*\/>\s*/gsi, "")
-    .replace(/<[^>]+fill="#ff00ff"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
-    .replace(/<[^>]+fill="#ff00ff"[^>]*\/>\s*/gsi, "");
+
+  // Strip chroma-key background shapes from the SVG (fill OR stroke OR style)
+  const keyRgb = `rgb(${KEY.r},${KEY.g},${KEY.b})`; // rgb(255,0,255)
+
+  // remove elements that have the key color in fill/stroke attributes or inline style
+  svgStr = svgStr.replace(
+    new RegExp(
+      `<([^\\s>\\/]+)([^>]*)(?:` +
+        `\\sfill="${keyRgb}"|\\sstroke="${keyRgb}"|` +
+        `\\sfill="#ff00ff"|\\sstroke="#ff00ff"|` +
+        `\\sstyle="[^"]*(?:fill\\s*:\\s*${keyRgb}|stroke\\s*:\\s*${keyRgb}|fill\\s*:\\s*#ff00ff|stroke\\s*:\\s*#ff00ff)[^"]*"` +
+      `)[^>]*(?:\\/?>)(?:[\\s\\S]*?<\\/\\1>)?`,
+      "gi"
+    ),
+    ""
+  );
 
   const holder = document.createElement("div");
   holder.style.position = "fixed";
@@ -508,6 +518,55 @@
   document.body.removeChild(holder);
   return svgEl;
 }
+  // If the logo is basically white, it will disappear on a white PDF page.
+  // Auto-force it to black (keeps PDF clean for patterns).
+  function estimateSvgIsMostlyWhite(svgRoot) {
+    // Quick heuristic: if most fills are very bright or missing (stroke-only),
+    // we treat it as a "white logo".
+    const nodes = svgRoot.querySelectorAll("[fill],[stroke]");
+    if (!nodes.length) return true;
+
+    let bright = 0, total = 0;
+
+    const isBright = (v) => {
+      v = (v || "").toLowerCase().trim();
+      if (!v || v === "none") return false;
+      if (v.startsWith("#")) {
+        const hex = v.slice(1);
+        const n = parseInt(hex.length === 3 ? hex.split("").map(c=>c+c).join("") : hex, 16);
+        const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+        const lum = 0.2126*r + 0.7152*g + 0.0722*b;
+        return lum > 235;
+      }
+      if (v.startsWith("rgb(")) {
+        const m = v.match(/rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/);
+        if (!m) return false;
+        const r = +m[1], g = +m[2], b = +m[3];
+        const lum = 0.2126*r + 0.7152*g + 0.0722*b;
+        return lum > 235;
+      }
+      return false;
+    };
+
+    nodes.forEach(el => {
+      const f = el.getAttribute("fill");
+      const s = el.getAttribute("stroke");
+      if (f && f !== "none") { total++; if (isBright(f)) bright++; }
+      if (s && s !== "none") { total++; if (isBright(s)) bright++; }
+    });
+
+    return total > 0 && (bright / total) > 0.6;
+  }
+
+  const mostlyWhite = estimateSvgIsMostlyWhite(svgEl);
+  if (mostlyWhite) {
+    svgEl.querySelectorAll("[fill]").forEach(el => {
+      if ((el.getAttribute("fill") || "").toLowerCase() !== "none") el.setAttribute("fill", "#000");
+    });
+    svgEl.querySelectorAll("[stroke]").forEach(el => {
+      if ((el.getAttribute("stroke") || "").toLowerCase() !== "none") el.setAttribute("stroke", "#000");
+    });
+  }
     async function tileSvgPatternToPdf(pdf, svgStamp, outWIn, outHIn, tileInches, gapIn) {
       const tilePt = tileInches * 72;
       const stepPt = ((tileInches + gapIn) / 1.5) * 72;
