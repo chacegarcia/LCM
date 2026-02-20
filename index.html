@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>HP Artwork Generator (400 DPI, HQ)</title>
+  <title>HP Artwork Generator (72 DPI, HQ)</title>
   <style>
     :root { --gap: 16px; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
@@ -45,7 +45,7 @@
       </div>
 
       <div class="field">
-        <label>Tile size (inches) @ 400 DPI</label>
+        <label>Tile size (inches) @ 72 DPI(Default for Adobe Illustrator)</label>
         <input id="imgIn" type="text" value='1"' />
       </div>
 
@@ -110,7 +110,7 @@
 
   <script>
     // ---------------- SETTINGS ----------------
-    const DPI = 400;               // export DPI (true output pixels = inches * DPI)
+    const DPI = 72;               // export DPI (true output pixels = inches * DPI)
     const PREVIEW_IN = 6.25;          // preview window is 6.25" x 6.25" (in output inches)
     const PREVIEW_CSS_PX = 420;    // visual size of the preview on screen
     const PREVIEW_PPI = 150;       // preview render PPI (safe on mobile)
