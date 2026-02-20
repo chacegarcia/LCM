@@ -9,10 +9,7 @@
     :root { --gap: 16px; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
     .wrap { display: grid; grid-template-columns: 360px 1fr; gap: var(--gap); padding: var(--gap); align-items: start; }
-    .panel {
-      border: 1px solid #e6e6e6; border-radius: 12px; padding: 14px; position: sticky; top: 12px;
-      background: #fff;
-    }
+    .panel { border: 1px solid #e6e6e6; border-radius: 12px; padding: 14px; position: sticky; top: 12px; background: #fff; }
     .field { margin-bottom: 12px; }
     label { display: block; font-size: 12px; opacity: 0.85; margin-bottom: 6px; }
     input[type="text"], button {
@@ -24,24 +21,17 @@
     button { cursor: pointer; }
     .btnRow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
     .meta { font-size: 12px; opacity: 0.8; line-height: 1.35; margin-top: 8px; }
-    .stage {
-      border: 1px solid #e6e6e6; border-radius: 12px; padding: 14px; background: #fff;
-      overflow: auto;
-    }
+    .stage { border: 1px solid #e6e6e6; border-radius: 12px; padding: 14px; background: #fff; overflow: auto; }
     canvas { border: 1px solid #cfcfcf; display: block; max-width: 100%; height: auto; touch-action: none; }
     .hint { font-size: 12px; opacity: 0.75; margin-bottom: 10px; }
     .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .toggleLine { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid #d9d9d9; border-radius: 10px; }
     .toggleLine span { font-size: 14px; }
-    .pill {
-      display:inline-block; font-size:12px; padding:2px 8px; border:1px solid #d9d9d9; border-radius:999px;
-      margin-left:6px; opacity:.85;
-    }
+    .pill { display:inline-block; font-size:12px; padding:2px 8px; border:1px solid #d9d9d9; border-radius:999px; margin-left:6px; opacity:.85; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <!-- LEFT COLUMN -->
     <div class="panel">
       <div class="field">
         <label>Upload image (any size)</label>
@@ -103,7 +93,6 @@
       </div>
     </div>
 
-    <!-- RIGHT COLUMN -->
     <div class="stage">
       <div class="hint">
         Preview is a <b>6&quot;×6&quot; window</b> into the full output. Drag to pan. Pinch/scroll to zoom.
@@ -121,26 +110,28 @@
 
   <script>
     // ---------------- PREVIEW SETTINGS ----------------
-    const DPI = 200;               // only used for parsing px->in; export is auto-tuned
+    const DPI = 200;               // only used for parsing px->in
     const PREVIEW_IN = 6;          // preview window is 6" x 6"
     const PREVIEW_CSS_PX = 420;
     const PREVIEW_PPI = 200;       // preview render PPI (safe on mobile)
 
     // ---------------- BAKED EXPORT POLICY ----------------
-    // Vector stamping budget (iOS-safe):
-    const MAX_VECTOR_STAMPS = 6000;  // if more stamps than this -> raster fallback
-    const MAX_TRACE_DIM_PX_CAP = 14000;
-    const MIN_TRACE_DIM_PX = 800;
+    // iOS-safe vector stamp budget (bigger than this gets slow/crashy)
+    const MAX_VECTOR_STAMPS = 2200;
 
-    // Trace tuning (baked):
-    const TRACE_DETAIL = 1.1;       // >1 = more detail
-    const TRACE_COLORS = 8;          // keep SVG small
+    // Trace size bounds (iOS-safe)
+    const MAX_TRACE_DIM_PX_CAP = 1800;
+    const MIN_TRACE_DIM_PX = 900;
 
-    // Raster fallback tuning (baked):
-    const RASTER_TILE_IN = 6;        // fewer tiles = lighter on iOS
+    // Trace tuning (for transparent PNG logos)
+    const TRACE_DETAIL = 1.05;     // stability > detail (prevents "glitchy")
+    const TRACE_COLORS = 2;        // IMPORTANT: alpha-mask trace is 2-color
+
+    // Raster fallback tuning (baked)
+    const RASTER_TILE_IN = 6;
     const RASTER_PPI_MIN = 96;
     const RASTER_PPI_MAX = 220;
-    const RASTER_JPEG_QUALITY = 0.98;
+    const RASTER_JPEG_QUALITY = 0.82;
 
     // ------------------------------------------------
     const fileInput = document.getElementById('fileInput');
@@ -258,7 +249,6 @@
     });
 
     // ---------- drawing (preview only) ----------
-    // BOXED (no stretch, no crop): contain/letterbox into the tile
     function drawBoxedTileAtIn(targetCtx, pxPerIn, xIn, yIn, tileIn) {
       if (!originalBitmap || !originalMeta) return;
 
@@ -349,7 +339,6 @@
       const stepIn = (tileInches + gapIn) / 1.5;
       const cols = Math.ceil(outWIn / stepIn) + 1;
       const rows = Math.ceil(outHIn / stepIn) + 1;
-      // half checkerboard
       return Math.ceil((cols * rows) / 2);
     }
 
@@ -426,85 +415,118 @@
       return false;
     }
 
-    // ---------- VECTOR: trace ONCE to an SVG STAMP ----------
+    // ---------- VECTOR: trace ONCE to an SVG STAMP (fixed for transparent PNGs) ----------
     function computeTraceMaxDimPx(tileInches) {
-      // Target ~300 px per inch of tile, then clamp to iOS-safe range
-      const target = Math.round(tileInches * 96);
+      // Aim ~350 px per inch of tile (then clamp)
+      const target = Math.round(tileInches * 350);
       return clamp(target, MIN_TRACE_DIM_PX, MAX_TRACE_DIM_PX_CAP);
     }
 
     async function traceToSvgStamp(traceMaxDimPx, colors, detail) {
-  if (!originalBitmap || !originalMeta) throw new Error("No image loaded.");
+      if (!originalBitmap || !originalMeta) throw new Error("No image loaded.");
 
-  const srcW = originalMeta.w;
-  const srcH = originalMeta.h;
+      const srcW = originalMeta.w;
+      const srcH = originalMeta.h;
 
-  const scaleDown = Math.max(srcW / traceMaxDimPx, srcH / traceMaxDimPx, 1);
-  const tW = Math.max(1, Math.round(srcW / scaleDown));
-  const tH = Math.max(1, Math.round(srcH / scaleDown));
+      const scaleDown = Math.max(srcW / traceMaxDimPx, srcH / traceMaxDimPx, 1);
+      const tW = Math.max(1, Math.round(srcW / scaleDown));
+      const tH = Math.max(1, Math.round(srcH / scaleDown));
 
-  const tcan = document.createElement("canvas");
-  tcan.width = tW;
-  tcan.height = tH;
-  const tctx = tcan.getContext("2d");
+      const tcan = document.createElement("canvas");
+      tcan.width = tW;
+      tcan.height = tH;
+      const tctx = tcan.getContext("2d", { willReadFrequently: true });
 
-  // Chroma-key background (unlikely to be in real logos)
-  const KEY_HEX = "#ff00ff";
-  tctx.fillStyle = KEY_HEX;
-  tctx.fillRect(0, 0, tW, tH);
+      // Draw source preserving transparency
+      tctx.clearRect(0, 0, tW, tH);
+      tctx.imageSmoothingEnabled = true;
+      tctx.imageSmoothingQuality = "high";
+      tctx.drawImage(originalBitmap, 0, 0, tW, tH);
 
-  // Draw image (keeps its colors; transparent parts show KEY_HEX)
-  tctx.imageSmoothingEnabled = true;
-  tctx.imageSmoothingQuality = "high";
-  tctx.drawImage(originalBitmap, 0, 0, tW, tH);
+      // Convert to a CLEAN binary mask from alpha (prevents "glitchy" traces)
+      const img = tctx.getImageData(0, 0, tW, tH);
+      const d = img.data;
 
-  const options = {
-    numberofcolors: clamp(Math.round(colors), 2, 32),
-    scale: 1,
-    pathomit: 12,
-    ltres: 1 / clamp(detail, 0.6, 3),
-    qtres: 1 / clamp(detail, 0.6, 3),
-    rightangleenhance: true
-  };
+      const EDGE_A = 55;   // include anti-aliased edge
+      const SOLID_A = 200; // for color sampling
 
-  let svgStr = ImageTracer.imagedataToSVG(
-    tctx.getImageData(0, 0, tW, tH),
-    options
-  );
+      // sample avg color from solid pixels (so vector inherits logo color)
+      let rs = 0, gs = 0, bs = 0, n = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const a = d[i + 3];
+        if (a >= SOLID_A) { rs += d[i]; gs += d[i + 1]; bs += d[i + 2]; n++; }
+      }
+      let avg = (n > 0)
+        ? { r: Math.round(rs / n), g: Math.round(gs / n), b: Math.round(bs / n) }
+        : { r: 0, g: 0, b: 0 };
 
-  // Strip chroma-key shapes from the SVG.
-  // ImageTracer often uses rgb(255,0,255) for that key color.
-  // Remove any element that has fill="rgb(255,0,255)" or fill="#ff00ff"
-  svgStr = svgStr
-    // remove paths/polygons/rects with key fill in rgb form
-    .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
-    .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*\/>\s*/gsi, "")
-    // remove hex form (some builds output hex)
-    .replace(/<[^>]+fill="#ff00ff"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
-    .replace(/<[^>]+fill="#ff00ff"[^>]*\/>\s*/gsi, "");
+      // If near-white logo, force black so it shows on white paper
+      const lum = 0.2126*avg.r + 0.7152*avg.g + 0.0722*avg.b;
+      if (lum > 235) avg = { r: 0, g: 0, b: 0 };
 
-  const holder = document.createElement("div");
-  holder.style.position = "fixed";
-  holder.style.left = "-99999px";
-  holder.style.top = "-99999px";
-  holder.innerHTML = svgStr.trim();
-  document.body.appendChild(holder);
+      // Background key + black foreground
+      const KEY = { r: 255, g: 0, b: 255 };
+      for (let i = 0; i < d.length; i += 4) {
+        const a = d[i + 3];
+        if (a >= EDGE_A) {
+          d[i] = 0; d[i+1] = 0; d[i+2] = 0; d[i+3] = 255;          // FG
+        } else {
+          d[i] = KEY.r; d[i+1] = KEY.g; d[i+2] = KEY.b; d[i+3] = 255; // BG
+        }
+      }
+      tctx.putImageData(img, 0, 0);
 
-  const svgEl = holder.querySelector("svg");
-  if (!svgEl) {
-    document.body.removeChild(holder);
-    throw new Error("Trace did not produce an SVG element.");
-  }
+      const options = {
+        numberofcolors: 2,
+        colorsampling: 0,
+        colorquantcycles: 1,
+        scale: 1,
+        pathomit: 20,
+        ltres: 1 / clamp(detail, 0.7, 2.0),
+        qtres: 1 / clamp(detail, 0.7, 2.0),
+        rightangleenhance: true
+      };
 
-  // Keep the stamp boxed (no crop, no stretch)
-  svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
-  svgEl.setAttribute("viewBox", `0 0 ${tW} ${tH}`);
+      let svgStr = ImageTracer.imagedataToSVG(
+        tctx.getImageData(0, 0, tW, tH),
+        options
+      );
 
-  svgEl.remove();
-  document.body.removeChild(holder);
+      // Strip magenta background shapes
+      svgStr = svgStr
+        .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
+        .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*\/>\s*/gsi, "")
+        .replace(/<[^>]+fill="#ff00ff"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
+        .replace(/<[^>]+fill="#ff00ff"[^>]*\/>\s*/gsi, "");
 
-  return svgEl;
-}
+      const holder = document.createElement("div");
+      holder.style.position = "fixed";
+      holder.style.left = "-99999px";
+      holder.style.top = "-99999px";
+      holder.innerHTML = svgStr.trim();
+      document.body.appendChild(holder);
+
+      const svgEl = holder.querySelector("svg");
+      if (!svgEl) {
+        document.body.removeChild(holder);
+        throw new Error("Trace did not produce an SVG element.");
+      }
+
+      svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      svgEl.setAttribute("viewBox", `0 0 ${tW} ${tH}`);
+
+      // Recolor remaining fills to avg color (or black)
+      const fillColor = `rgb(${avg.r},${avg.g},${avg.b})`;
+      svgEl.querySelectorAll("[fill]").forEach(el => {
+        const f = (el.getAttribute("fill") || "").toLowerCase();
+        if (!f || f === "none") return;
+        el.setAttribute("fill", fillColor);
+      });
+
+      svgEl.remove();
+      document.body.removeChild(holder);
+      return svgEl;
+    }
 
     async function tileSvgPatternToPdf(pdf, svgStamp, outWIn, outHIn, tileInches, gapIn) {
       const tilePt = tileInches * 72;
@@ -524,7 +546,6 @@
           const yPt = r * stepPt;
           if (xPt > pageWPt || yPt > pageHPt) continue;
 
-          // Place the same SVG into the square tile region
           await pdf.svg(svgStamp, { x: xPt, y: yPt, width: tilePt, height: tilePt });
         }
       }
@@ -535,10 +556,7 @@
       const rIn = diaIn / 2;
       const xStep = diaIn;
       const yStep = diaIn * Math.sqrt(3) / 2;
-
-      // ~0.01" stroke
       pdf.setLineWidth(Math.max(0.5, 0.01 * 72));
-      // pdf.setDrawColor(0);
 
       let row = 0;
       for (let cy = -rIn; cy <= outHIn + rIn; cy += yStep, row++) {
@@ -555,7 +573,6 @@
       const nativeW = originalMeta.w / outWIn;
       const nativeH = originalMeta.h / outHIn;
       const native = Math.min(nativeW, nativeH);
-      // about 2x native looks crisp without inventing too much
       return clamp(Math.round(native * 2), RASTER_PPI_MIN, RASTER_PPI_MAX);
     }
 
@@ -593,7 +610,6 @@
 
           if (x > wIn || y > hIn || x + tileInches < 0 || y + tileInches < 0) continue;
 
-          // boxed tile draw
           drawBoxedTileAtIn(targetCtx, pxPerIn, x, y, tileInches);
         }
       }
@@ -673,20 +689,19 @@
 
           if (hexOn) drawHexOverlayPdf(pdf, outWIn, outHIn, circleDiaIn);
 
-          renderInfo.textContent = "Vector PDF built. Sending download…";
+          renderInfo.textContent = "PDF built. Sending download…";
           const blob = pdf.output("blob");
           await deliverPdfBlob(blob, filename);
           return;
         } catch (err) {
           console.error(err);
           renderInfo.textContent = "Vector failed. Falling back to raster tiled PDF…";
-          // fall through to raster fallback
         }
       } else if (vectorToggleEl.checked && estStamps > MAX_VECTOR_STAMPS) {
         renderInfo.textContent = `Vector would place ~${estStamps} stamps (limit ${MAX_VECTOR_STAMPS}). Falling back to raster…`;
       }
 
-      // --- RASTER FALLBACK (small, efficient) ---
+      // --- RASTER FALLBACK ---
       const rasterPPI = computeEfficientRasterPPI(outWIn, outHIn);
       const tileIn = RASTER_TILE_IN;
 
