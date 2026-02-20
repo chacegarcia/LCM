@@ -99,6 +99,7 @@
     <div class="stage">
       <div class="hint">
         Preview is a <b>6&quot;×6&quot; window</b> into the full output. Drag to pan. Pinch/scroll to zoom.
+        <br/>If output is too large for in-browser PNG/JPG, the app auto-switches to <b>tiled PDF</b> and disables PNG/JPG.
       </div>
       <canvas id="canvas"></canvas>
     </div>
@@ -112,8 +113,14 @@
     const DPI = 400;               // export DPI (true output pixels = inches * DPI)
     const PREVIEW_IN = 6;          // preview window is 6" x 6" (in output inches)
     const PREVIEW_CSS_PX = 420;    // visual size of the preview on screen
-    const PREVIEW_PPI = 150;       // how many pixels per inch to use for preview rendering (SAFE ON MOBILE)
-		const GAP_REDUCE = 1.5;        // makes the spacing between tiles smaller
+    const PREVIEW_PPI = 150;       // preview render PPI (safe on mobile)
+
+    // In-browser bitmap caps (conservative for iOS Safari)
+    const MAX_EXPORT_DIM = 8192;           // per-dimension cap
+    const MAX_EXPORT_PIXELS = 60_000_000;  // total pixel cap
+
+    // Tiled PDF tile size (inches). Smaller = safer, bigger = faster.
+    const PDF_TILE_IN = 2;
     // ------------------------------------------------
 
     const fileInput = document.getElementById('fileInput');
@@ -141,11 +148,7 @@
     let originalFileBaseName = "Artwork";
 
     // Preview camera (in OUTPUT inches)
-    const previewCam = {
-      xIn: 0,
-      yIn: 0,
-      zoom: 1 // 1 => window is 6"x6"; 2 => window is 3"x3" (zoom in)
-    };
+    const previewCam = { xIn: 0, yIn: 0, zoom: 1 };
 
     // -------- unit parsing: return inches (supports px or inches) --------
     function tryParseToInches(text) {
@@ -184,6 +187,46 @@
 
       previewCam.xIn = clamp(previewCam.xIn, 0, maxX);
       previewCam.yIn = clamp(previewCam.yIn, 0, maxY);
+    }
+
+    // -------- export cap enforcement (auto-disable png/jpg, auto-select pdf) --------
+    function enforceExportCaps(showMsg = false) {
+      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+
+      const expWpx = Math.round(outWIn * DPI);
+      const expHpx = Math.round(outHIn * DPI);
+      const totalPx = expWpx * expHpx;
+
+      const overCap =
+        expWpx > MAX_EXPORT_DIM ||
+        expHpx > MAX_EXPORT_DIM ||
+        totalPx > MAX_EXPORT_PIXELS;
+
+      const pngOpt = formatEl.querySelector('option[value="png"]');
+      const jpgOpt = formatEl.querySelector('option[value="jpg"]');
+      const pdfOpt = formatEl.querySelector('option[value="pdf"]');
+
+      if (overCap) {
+        if (pngOpt) pngOpt.disabled = true;
+        if (jpgOpt) jpgOpt.disabled = true;
+        if (pdfOpt) pdfOpt.disabled = false;
+
+        if (formatEl.value === "png" || formatEl.value === "jpg") {
+          formatEl.value = "pdf";
+        }
+
+        if (showMsg) {
+          renderInfo.textContent =
+            `Output ${outWIn}×${outHIn} in @ ${DPI} DPI = ${expWpx}×${expHpx}px (~${(totalPx/1e6).toFixed(0)} MP). ` +
+            `PNG/JPG disabled (browser cap). PDF auto-selected (tiled).`;
+        }
+      } else {
+        if (pngOpt) pngOpt.disabled = false;
+        if (jpgOpt) jpgOpt.disabled = false;
+      }
+
+      return { overCap, expWpx, expHpx, totalPx, outWIn, outHIn };
     }
 
     // -------- image load/cache --------
@@ -233,7 +276,6 @@
       imgInfo.textContent = "Loading...";
       try {
         await loadAndCacheOriginal(file);
-        // reset camera to top-left on new load (optional; change to center if you want)
         previewCam.xIn = 0;
         previewCam.yIn = 0;
         previewCam.zoom = 1;
@@ -258,7 +300,7 @@
       ctx.setTransform(1,0,0,1,0,0);
     }
 
-    // -------- core: draw a letterboxed tile at (x,y) in INCHES --------
+    // -------- draw letterboxed tile at (x,y) in INCHES --------
     function drawLetterboxedTileAtIn(targetCtx, pxPerIn, xIn, yIn, tileIn) {
       if (!originalBitmap || !originalMeta) return;
 
@@ -278,25 +320,22 @@
 
     // -------- render ONLY a viewport (camera window) --------
     function renderArtworkViewport(targetCtx, pxPerIn, cfg) {
-      const { outWIn, outHIn, tileIn, gapIn, hexOn, circleDiaIn, camXIn, camYIn, viewWIn, viewHIn } = cfg;
+      const { outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn, camXIn, camYIn, viewWIn, viewHIn } = cfg;
 
       const wPx = Math.max(1, Math.round(viewWIn * pxPerIn));
       const hPx = Math.max(1, Math.round(viewHIn * pxPerIn));
 
-      // clear + background
       targetCtx.setTransform(1,0,0,1,0,0);
       targetCtx.clearRect(0,0,wPx,hPx);
       targetCtx.fillStyle = "#fff";
       targetCtx.fillRect(0,0,wPx,hPx);
 
-      // inches -> pixels
       targetCtx.setTransform(pxPerIn, 0, 0, pxPerIn, 0, 0);
       targetCtx.imageSmoothingEnabled = true;
       targetCtx.imageSmoothingQuality = "high";
 
-      const stepIn = (tileIn + gapIn) / GAP_REDUCE;
+      const stepIn = (tileInches + gapIn) / 1.5;
 
-      // Only iterate tiles that could be visible (plus a small buffer)
       const startC = Math.floor(camXIn / stepIn) - 2;
       const startR = Math.floor(camYIn / stepIn) - 2;
       const endC   = Math.ceil((camXIn + viewWIn) / stepIn) + 2;
@@ -305,7 +344,6 @@
       let approxCols = Math.max(0, endC - startC);
       let approxRows = Math.max(0, endR - startR);
 
-      // checkerboard
       for (let r = startR; r < endR; r++) {
         for (let c = startC; c < endC; c++) {
           if (((r + c) % 2) !== 0) continue;
@@ -313,18 +351,15 @@
           const xFull = c * stepIn;
           const yFull = r * stepIn;
 
-          // full output -> viewport local
           const x = xFull - camXIn;
           const y = yFull - camYIn;
 
-          // quick reject if outside viewport
-          if (x > viewWIn || y > viewHIn || x + tileIn < 0 || y + tileIn < 0) continue;
+          if (x > viewWIn || y > viewHIn || x + tileInches < 0 || y + tileInches < 0) continue;
 
-          drawLetterboxedTileAtIn(targetCtx, pxPerIn, x, y, tileIn);
+          drawLetterboxedTileAtIn(targetCtx, pxPerIn, x, y, tileInches);
         }
       }
 
-      // hex overlay (viewport-local but aligned to full pattern)
       if (hexOn) {
         const dia = circleDiaIn;
         const rr = dia / 2;
@@ -356,8 +391,8 @@
       return { wPx, hPx, approxCols, approxRows, stepIn };
     }
 
-    // -------- render FULL output (export only) --------
-    function renderArtworkFull(targetCtx, pxPerIn, outWIn, outHIn, tileIn, gapIn, hexOn, circleDiaIn) {
+    // -------- render FULL output (for bitmap export only, under cap) --------
+    function renderArtworkFull(targetCtx, pxPerIn, outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn) {
       const wPx = Math.max(1, Math.round(outWIn * pxPerIn));
       const hPx = Math.max(1, Math.round(outHIn * pxPerIn));
 
@@ -370,7 +405,7 @@
       targetCtx.imageSmoothingEnabled = true;
       targetCtx.imageSmoothingQuality = "high";
 
-      const stepIn = (tileIn + gapIn) / 1.5;
+      const stepIn = (tileInches + gapIn) / 1.5;
       const cols = Math.ceil(outWIn / stepIn);
       const rows = Math.ceil(outHIn / stepIn);
 
@@ -380,7 +415,7 @@
           const xIn = c * stepIn;
           const yIn = r * stepIn;
           if (xIn > outWIn || yIn > outHIn) continue;
-          drawLetterboxedTileAtIn(targetCtx, pxPerIn, xIn, yIn, tileIn);
+          drawLetterboxedTileAtIn(targetCtx, pxPerIn, xIn, yIn, tileInches);
         }
       }
 
@@ -412,52 +447,118 @@
       return { cols, rows, stepIn, wPx, hPx };
     }
 
+    // -------- render a TILE region for PDF assembly (safe for huge sizes) --------
+    function renderArtworkTile(targetCtx, pxPerIn, cfg) {
+      const {
+        outWIn, outHIn,
+        tileInches, gapIn,
+        hexOn, circleDiaIn,
+        x0In, y0In, wIn, hIn
+      } = cfg;
+
+      const wPx = Math.max(1, Math.round(wIn * pxPerIn));
+      const hPx = Math.max(1, Math.round(hIn * pxPerIn));
+
+      targetCtx.setTransform(1,0,0,1,0,0);
+      targetCtx.clearRect(0,0,wPx,hPx);
+      targetCtx.fillStyle = "#fff";
+      targetCtx.fillRect(0,0,wPx,hPx);
+
+      targetCtx.setTransform(pxPerIn,0,0,pxPerIn,0,0);
+      targetCtx.imageSmoothingEnabled = true;
+      targetCtx.imageSmoothingQuality = "high";
+
+      const stepIn = (tileInches + gapIn) / 1.5;
+
+      const startC = Math.floor(x0In / stepIn) - 2;
+      const startR = Math.floor(y0In / stepIn) - 2;
+      const endC   = Math.ceil((x0In + wIn) / stepIn) + 2;
+      const endR   = Math.ceil((y0In + hIn) / stepIn) + 2;
+
+      for (let r = startR; r < endR; r++) {
+        for (let c = startC; c < endC; c++) {
+          if (((r + c) % 2) !== 0) continue;
+
+          const xFull = c * stepIn;
+          const yFull = r * stepIn;
+
+          const x = xFull - x0In;
+          const y = yFull - y0In;
+
+          if (x > wIn || y > hIn || x + tileInches < 0 || y + tileInches < 0) continue;
+
+          drawLetterboxedTileAtIn(targetCtx, pxPerIn, x, y, tileInches);
+        }
+      }
+
+      if (hexOn) {
+        const dia = circleDiaIn;
+        const rr = dia / 2;
+        const xStep = dia;
+        const yStep = dia * Math.sqrt(3) / 2;
+
+        targetCtx.save();
+        targetCtx.lineWidth = Math.max(1/pxPerIn, 0.01);
+        targetCtx.globalAlpha = 0.65;
+
+        let row = Math.floor((y0In - rr) / yStep);
+        for (let cyFull = row * yStep; cyFull <= y0In + hIn + rr; cyFull += yStep, row++) {
+          const xOffset = (row % 2 === 0) ? 0 : xStep / 2;
+          let col = Math.floor((x0In - rr - xOffset) / xStep);
+
+          for (let cxFull = col * xStep + xOffset; cxFull <= x0In + wIn + rr; cxFull += xStep) {
+            const cx = cxFull - x0In;
+            const cy = cyFull - y0In;
+            targetCtx.beginPath();
+            targetCtx.arc(cx, cy, rr, 0, Math.PI * 2);
+            targetCtx.stroke();
+          }
+        }
+
+        targetCtx.restore();
+      }
+    }
+
     // -------- PREVIEW RENDER (viewport only; safe on mobile) --------
     function renderPreview() {
-      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
-      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
-      const tileIn = parseInchesOrDefault(imgInEl.value, 1);
+      const cap = enforceExportCaps(false);
+
+      const outWIn = cap.outWIn;
+      const outHIn = cap.outHIn;
+      const tileInches = parseInchesOrDefault(imgInEl.value, 1);
       const gapIn  = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
       const hexOn  = !!hexToggleEl.checked;
       const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
 
-      // clamp camera to output bounds
       clampPreviewCam(outWIn, outHIn);
-
       setupPreviewCanvas();
 
-      // camera window size (in output inches)
       const viewWIn = PREVIEW_IN / previewCam.zoom;
       const viewHIn = PREVIEW_IN / previewCam.zoom;
 
-      // offscreen for viewport only (bounded)
       const off = document.createElement("canvas");
       off.width  = Math.max(1, Math.round(viewWIn * PREVIEW_PPI));
       off.height = Math.max(1, Math.round(viewHIn * PREVIEW_PPI));
       const octx = off.getContext("2d");
 
       const meta = renderArtworkViewport(octx, PREVIEW_PPI, {
-        outWIn, outHIn, tileIn, gapIn, hexOn, circleDiaIn,
+        outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn,
         camXIn: previewCam.xIn,
         camYIn: previewCam.yIn,
         viewWIn,
         viewHIn
       });
 
-      // draw to visible preview
       ctx.setTransform(1,0,0,1,0,0);
       ctx.clearRect(0,0,canvas.width,canvas.height);
       ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
 
-      // info
-      const expWpx = Math.round(outWIn * DPI);
-      const expHpx = Math.round(outHIn * DPI);
-
       const parts = [];
-      parts.push(`Preview window: ${viewWIn.toFixed(2)}"×${viewHIn.toFixed(2)}" (zoom ${previewCam.zoom.toFixed(2)}×).`);
+      parts.push(`Preview: ${viewWIn.toFixed(2)}"×${viewHIn.toFixed(2)}" (zoom ${previewCam.zoom.toFixed(2)}×).`);
       parts.push(`Pan: x=${previewCam.xIn.toFixed(2)}", y=${previewCam.yIn.toFixed(2)}".`);
-      parts.push(`Output: ${outWIn.toFixed(2)}×${outHIn.toFixed(2)} in → Export ${expWpx}×${expHpx}px @ ${DPI} DPI.`);
-      parts.push(`Tile: ${tileIn.toFixed(2)}". Gap: ${gapIn.toFixed(2)}".`);
+      parts.push(`Output: ${outWIn.toFixed(2)}×${outHIn.toFixed(2)} in @ ${DPI} DPI → ${cap.expWpx}×${cap.expHpx}px (~${(cap.totalPx/1e6).toFixed(0)} MP).`);
+      parts.push(cap.overCap ? `PNG/JPG disabled → PDF tiled export.` : `PNG/JPG enabled.`);
+      parts.push(`Tile: ${tileInches.toFixed(2)}". Gap: ${gapIn.toFixed(2)}".`);
       if (originalMeta) parts.push(`Source: ${originalMeta.w}×${originalMeta.h}px.`);
       else parts.push(`Upload an image to see tiles.`);
       parts.push(hexOn ? `Hex overlay ON (${circleDiaIn.toFixed(2)}").` : `Hex overlay OFF.`);
@@ -465,68 +566,129 @@
       renderInfo.textContent = parts.join(" ");
     }
 
-    // -------- DOWNLOAD HELPERS --------
+    // -------- Download helper (best-effort on iOS) --------
     function downloadBlob(blob, filename) {
-      const a = document.createElement("a");
       const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
       a.href = url;
       a.download = filename;
+      a.rel = "noopener";
       document.body.appendChild(a);
       a.click();
       a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1500);
+
+      // fallback open
+      setTimeout(() => {
+        try { window.open(url, "_blank"); } catch {}
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+      }, 250);
     }
 
-    // -------- EXPORT (backend/offscreen, true DPI; unaffected by pan/zoom) --------
-    async function exportNow() {
-      // keep preview up-to-date, but export ignores previewCam
-      renderPreview();
+    function canvasToBlob(canvasEl, mime, quality) {
+      return new Promise((resolve) => canvasEl.toBlob(resolve, mime, quality));
+    }
 
-      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
-      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
-      const tileIn = parseInchesOrDefault(imgInEl.value, 1);
+    // -------- EXPORT: bitmap under cap, otherwise tiled PDF --------
+    async function exportNow() {
+      const cap = enforceExportCaps(true);
+      const outWIn = cap.outWIn;
+      const outHIn = cap.outHIn;
+
+      const tileInches = parseInchesOrDefault(imgInEl.value, 1);
       const gapIn  = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
       const hexOn  = !!hexToggleEl.checked;
       const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
 
-      const fmt = formatEl.value;
       const base = `${originalFileBaseName} Random Pattern`;
 
-      const exp = document.createElement("canvas");
-      exp.width  = Math.max(1, Math.round(outWIn * DPI));
-      exp.height = Math.max(1, Math.round(outHIn * DPI));
-      const ectx = exp.getContext("2d");
+      // Auto force PDF when over cap
+      if (cap.overCap) formatEl.value = "pdf";
 
-      renderArtworkFull(ectx, DPI, outWIn, outHIn, tileIn, gapIn, hexOn, circleDiaIn);
+      const fmt = formatEl.value;
 
-      if (fmt === "png") {
-        exp.toBlob((blob) => blob && downloadBlob(blob, `${base}.png`), "image/png", 1.0);
+      // Bitmap export only if under cap
+      if (!cap.overCap && (fmt === "png" || fmt === "jpg")) {
+        const exp = document.createElement("canvas");
+        exp.width = cap.expWpx;
+        exp.height = cap.expHpx;
+
+        const ectx = exp.getContext("2d");
+        renderArtworkFull(ectx, DPI, outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn);
+
+        if (fmt === "png") {
+          const blob = await canvasToBlob(exp, "image/png", 1.0);
+          if (!blob) { renderInfo.textContent = "PNG export failed (null blob). Try smaller size."; return; }
+          downloadBlob(blob, `${base}.png`);
+          return;
+        } else {
+          const blob = await canvasToBlob(exp, "image/jpeg", 0.95);
+          if (!blob) { renderInfo.textContent = "JPG export failed (null blob). Try smaller size."; return; }
+          downloadBlob(blob, `${base}.jpg`);
+          return;
+        }
+      }
+
+      // Tiled PDF (works for huge sizes like 50x96)
+      const { jsPDF } = window.jspdf || {};
+      if (!jsPDF) {
+        renderInfo.textContent = "PDF export failed: jsPDF not loaded.";
         return;
       }
 
-      if (fmt === "jpg") {
-        exp.toBlob((blob) => blob && downloadBlob(blob, `${base}.jpg`), "image/jpeg", 0.95);
-        return;
+      const pdf = new jsPDF({
+        orientation: (outWIn >= outHIn) ? "landscape" : "portrait",
+        unit: "in",
+        format: [outWIn, outHIn]
+      });
+
+      const tileIn = PDF_TILE_IN;
+      const cols = Math.ceil(outWIn / tileIn);
+      const rows = Math.ceil(outHIn / tileIn);
+
+      const tileCanvas = document.createElement("canvas");
+      let tctx = tileCanvas.getContext("2d");
+
+      let count = 0;
+      const total = cols * rows;
+
+      renderInfo.textContent = `Tiled PDF export: ${cols}×${rows} tiles (${tileIn}" each).`;
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const x0 = c * tileIn;
+          const y0 = r * tileIn;
+          const wIn = Math.min(tileIn, outWIn - x0);
+          const hIn = Math.min(tileIn, outHIn - y0);
+
+          const wPx = Math.max(1, Math.round(wIn * DPI));
+          const hPx = Math.max(1, Math.round(hIn * DPI));
+
+          if (tileCanvas.width !== wPx) tileCanvas.width = wPx;
+          if (tileCanvas.height !== hPx) tileCanvas.height = hPx;
+          tctx = tileCanvas.getContext("2d");
+
+          renderArtworkTile(tctx, DPI, {
+            outWIn, outHIn,
+            tileInches, gapIn,
+            hexOn, circleDiaIn,
+            x0In: x0, y0In: y0, wIn, hIn
+          });
+
+          const dataUrl = tileCanvas.toDataURL("image/png"); // tile-sized => safe
+          pdf.addImage(dataUrl, "PNG", x0, y0, wIn, hIn);
+
+          count++;
+          if (count % 10 === 0) {
+            renderInfo.textContent = `Tiled PDF export: ${count}/${total} tiles...`;
+          }
+        }
       }
 
-      if (fmt === "pdf") {
-        const { jsPDF } = window.jspdf;
-
-        const pdf = new jsPDF({
-          orientation: (outWIn >= outHIn) ? "landscape" : "portrait",
-          unit: "in",
-          format: [outWIn, outHIn]
-        });
-
-        const dataUrl = exp.toDataURL("image/png");
-        pdf.addImage(dataUrl, "PNG", 0, 0, outWIn, outHIn);
-        pdf.save(`${base}.pdf`);
-        return;
-      }
+      pdf.save(`${base}.pdf`);
+      renderInfo.textContent = "Tiled PDF export started.";
     }
 
     // -------- PAN + ZOOM (preview only) --------
-    // Drag to pan
     let isPanning = false;
     let panStart = null;
 
@@ -558,14 +720,10 @@
       renderPreview();
     });
 
-    function endPan() {
-      isPanning = false;
-      panStart = null;
-    }
+    function endPan() { isPanning = false; panStart = null; }
     canvas.addEventListener("pointerup", endPan);
     canvas.addEventListener("pointercancel", endPan);
 
-    // Wheel zoom (desktop/trackpad)
     canvas.addEventListener("wheel", (e) => {
       e.preventDefault();
       const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
@@ -578,14 +736,11 @@
       renderPreview();
     }, { passive: false });
 
-    // Pinch zoom (mobile) using two pointers
-    const activePointers = new Map(); // id -> {x,y}
+    // Mobile pinch zoom (two pointers)
+    const activePointers = new Map();
     let pinchStart = null;
 
-    function dist(a, b) {
-      const dx = a.x - b.x, dy = a.y - b.y;
-      return Math.hypot(dx, dy);
-    }
+    function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
     canvas.addEventListener("pointerdown", (e) => {
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -627,7 +782,13 @@
     renderBtn.addEventListener('click', renderPreview);
     exportBtn.addEventListener('click', exportNow);
 
+    // Update cap state when typing sizes
+    [outWInEl, outHInEl].forEach(el => {
+      el.addEventListener("input", () => enforceExportCaps(true));
+    });
+
     // Initial draw
+    enforceExportCaps(false);
     renderPreview();
   </script>
 </body>
