@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>HP Artwork Generator Generative SVG Tracing</title>
+  <title>HP Artwork Generator (Vector Pattern PDF)</title>
+  <link rel="icon" href="favicon.ico" type="image/x-icon"/>
   <style>
     :root { --gap: 16px; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
@@ -14,7 +15,7 @@
     }
     .field { margin-bottom: 12px; }
     label { display: block; font-size: 12px; opacity: 0.85; margin-bottom: 6px; }
-    input[type="text"], select, button {
+    input[type="text"], button {
       font-size: 14px; padding: 9px 10px; width: 100%;
       border: 1px solid #d9d9d9; border-radius: 10px; background: #fff;
       box-sizing: border-box;
@@ -32,7 +33,10 @@
     .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .toggleLine { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid #d9d9d9; border-radius: 10px; }
     .toggleLine span { font-size: 14px; }
-    .row3 { display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    .pill {
+      display:inline-block; font-size:12px; padding:2px 8px; border:1px solid #d9d9d9; border-radius:999px;
+      margin-left:6px; opacity:.85;
+    }
   </style>
 </head>
 <body>
@@ -67,7 +71,7 @@
       </div>
 
       <div class="field">
-        <label>Hex-packed circle overlay</label>
+        <label>Hex-packed circle overlay <span class="pill">Vector</span></label>
         <div class="toggleLine">
           <input id="hexToggle" type="checkbox" />
           <span>Show hex-packed circles</span>
@@ -78,33 +82,14 @@
       </div>
 
       <div class="field">
-        <label>PDF Export Mode</label>
-
+        <label>Export <span class="pill">PDF only</span></label>
         <div class="toggleLine">
-          <input id="vectorToggle" type="checkbox" />
-          <span>Vector outline mode (trace to SVG → PDF)</span>
+          <input id="vectorToggle" type="checkbox" checked />
+          <span>Vector outline tiling (auto-tuned)</span>
         </div>
-
-        <div style="height:10px;"></div>
-
-        <div class="row3">
-          <div class="field">
-            <label>Trace detail</label>
-            <input id="traceDetail" type="text" value="1.0" />
-          </div>
-          <div class="field">
-            <label>Colors</label>
-            <input id="traceColors" type="text" value="8" />
-          </div>
-          <div class="field">
-            <label>Trace PPI</label>
-            <input id="tracePPI" type="text" value="180" />
-          </div>
-        </div>
-
         <div class="meta">
-          Notes: Vector mode creates a true vector PDF (tiny + sharp), but depends on the raster quality.
-          For logos/line-art it’s excellent. For photos it can get heavy.
+          Auto-tuned for efficient quality/file size based on output + tile size. <br/>
+          If the pattern would require too many vector stamps, it falls back to a small raster-tiled PDF.
         </div>
       </div>
 
@@ -135,38 +120,42 @@
   <script src="https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.js"></script>
 
   <script>
-    // ---------------- SETTINGS ----------------
-    const DPI = 400;               // used for preview info only; PDF export is vector OR tiled raster fallback
+    // ---------------- PREVIEW SETTINGS ----------------
+    const DPI = 400;               // only used for parsing px->in; export is auto-tuned
     const PREVIEW_IN = 6;          // preview window is 6" x 6"
     const PREVIEW_CSS_PX = 420;
     const PREVIEW_PPI = 170;       // preview render PPI (safe on mobile)
 
-    // Raster fallback PDF tiling (only used if vector mode is off OR vector tracing fails)
-    const PDF_TILE_IN = 3;         // larger = fewer tiles, usually ok on iPad
-    const PDF_RASTER_PPI_DEFAULT = 180; // raster-in-PDF resolution (keeps files sane)
-    const PDF_JPEG_QUALITY = 0.82; // raster tiles compression (smaller PDF). Increase for crisper edges.
-    // ------------------------------------------------
+    // ---------------- BAKED EXPORT POLICY ----------------
+    // Vector stamping budget (iOS-safe):
+    const MAX_VECTOR_STAMPS = 22000;  // if more stamps than this -> raster fallback
+    const MAX_TRACE_DIM_PX_CAP = 14000;
+    const MIN_TRACE_DIM_PX = 800;
 
+    // Trace tuning (baked):
+    const TRACE_DETAIL = 1.18;       // >1 = more detail
+    const TRACE_COLORS = 6;          // keep SVG small
+
+    // Raster fallback tuning (baked):
+    const RASTER_TILE_IN = 6;        // fewer tiles = lighter on iOS
+    const RASTER_PPI_MIN = 72;
+    const RASTER_PPI_MAX = 220;
+    const RASTER_JPEG_QUALITY = 0.98;
+
+    // ------------------------------------------------
     const fileInput = document.getElementById('fileInput');
     const imgInEl = document.getElementById('imgIn');
     const gapInEl = document.getElementById('gapIn');
     const outWInEl = document.getElementById('outWIn');
     const outHInEl = document.getElementById('outHIn');
-
     const hexToggleEl = document.getElementById('hexToggle');
     const circleDiaInEl = document.getElementById('circleDiaIn');
-
     const vectorToggleEl = document.getElementById('vectorToggle');
-    const traceDetailEl = document.getElementById('traceDetail');
-    const traceColorsEl = document.getElementById('traceColors');
-    const tracePPIEl = document.getElementById('tracePPI');
-
     const renderBtn = document.getElementById('renderBtn');
     const exportBtn = document.getElementById('exportBtn');
 
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
-
     const imgInfo = document.getElementById('imgInfo');
     const renderInfo = document.getElementById('renderInfo');
 
@@ -197,10 +186,6 @@
     function parseInchesOrDefault(text, defIn) {
       const v = tryParseToInches(text);
       return (v === null) ? defIn : v;
-    }
-    function parseNumberOrDefault(text, def) {
-      const n = Number((text ?? "").toString().trim());
-      return Number.isFinite(n) ? n : def;
     }
     function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 
@@ -272,7 +257,7 @@
       }
     });
 
-    // ---------- drawing ----------
+    // ---------- drawing (preview only) ----------
     // BOXED (no stretch, no crop): contain/letterbox into the tile
     function drawBoxedTileAtIn(targetCtx, pxPerIn, xIn, yIn, tileIn) {
       if (!originalBitmap || !originalMeta) return;
@@ -292,7 +277,7 @@
     }
 
     function renderArtworkViewport(targetCtx, pxPerIn, cfg) {
-      const { outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn, camXIn, camYIn, viewWIn, viewHIn } = cfg;
+      const { tileInches, gapIn, hexOn, circleDiaIn, camXIn, camYIn, viewWIn, viewHIn } = cfg;
 
       const wPx = Math.max(1, Math.round(viewWIn * pxPerIn));
       const hPx = Math.max(1, Math.round(viewHIn * pxPerIn));
@@ -327,7 +312,6 @@
           const y = yFull - camYIn;
 
           if (x > viewWIn || y > viewHIn || x + tileInches < 0 || y + tileInches < 0) continue;
-
           drawBoxedTileAtIn(targetCtx, pxPerIn, x, y, tileInches);
         }
       }
@@ -350,17 +334,23 @@
           for (let cxFull = col * xStep + xOffset; cxFull <= camXIn + viewWIn + rr; cxFull += xStep) {
             const cx = cxFull - camXIn;
             const cy = cyFull - camYIn;
-
             targetCtx.beginPath();
             targetCtx.arc(cx, cy, rr, 0, Math.PI * 2);
             targetCtx.stroke();
           }
         }
-
         targetCtx.restore();
       }
 
       return { approxCols, approxRows, stepIn };
+    }
+
+    function estimateVectorStamps(outWIn, outHIn, tileInches, gapIn) {
+      const stepIn = (tileInches + gapIn) / 1.5;
+      const cols = Math.ceil(outWIn / stepIn) + 1;
+      const rows = Math.ceil(outHIn / stepIn) + 1;
+      // half checkerboard
+      return Math.ceil((cols * rows) / 2);
     }
 
     function renderPreview() {
@@ -383,7 +373,7 @@
       const octx = off.getContext("2d");
 
       const meta = renderArtworkViewport(octx, PREVIEW_PPI, {
-        outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn,
+        tileInches, gapIn, hexOn, circleDiaIn,
         camXIn: previewCam.xIn, camYIn: previewCam.yIn,
         viewWIn, viewHIn
       });
@@ -392,112 +382,173 @@
       ctx.clearRect(0,0,canvas.width,canvas.height);
       ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
 
+      const est = estimateVectorStamps(outWIn, outHIn, tileInches, gapIn);
       const parts = [];
       parts.push(`Preview: ${viewWIn.toFixed(2)}"×${viewHIn.toFixed(2)}" (zoom ${previewCam.zoom.toFixed(2)}×).`);
       parts.push(`Pan: x=${previewCam.xIn.toFixed(2)}", y=${previewCam.yIn.toFixed(2)}".`);
       parts.push(`Output: ${outWIn.toFixed(2)}×${outHIn.toFixed(2)} in.`);
       if (originalMeta) parts.push(`Source: ${originalMeta.w}×${originalMeta.h}px.`);
       parts.push(`Tile: ${tileInches.toFixed(2)}". Gap: ${gapIn.toFixed(2)}".`);
+      parts.push(`Est. vector stamps: ~${est} (limit ${MAX_VECTOR_STAMPS}).`);
       parts.push(`Vector mode: ${vectorToggleEl.checked ? "ON" : "OFF"} (PDF only).`);
       parts.push(`Viewport tiles checked ~ ${meta.approxCols}×${meta.approxRows}.`);
       renderInfo.textContent = parts.join(" ");
     }
 
-    // ---------- iOS-friendly PDF delivery ----------
-    async function shareBlobIfPossible(blob, filename) {
-      if (!navigator.share) return false;
+    // ---------- PDF delivery (download-first, no new tab) ----------
+    async function deliverPdfBlob(blob, filename) {
+      // Try a true download first
       try {
-        const file = new File([blob], filename, { type: blob.type || "application/pdf" });
-        if (navigator.canShare && !navigator.canShare({ files: [file] })) return false;
-        await navigator.share({ files: [file], title: filename });
-        return true;
-      } catch { return false; }
-    }
-    function openBlobInNewTab(blob) {
-      const url = URL.createObjectURL(blob);
-      const w = window.open(url, "_blank");
-      if (!w) window.location.href = url;
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      } catch {}
+
+      // Reliable iOS path: share sheet (no new tab)
+      if (navigator.share) {
+        try {
+          const file = new File([blob], filename, { type: "application/pdf" });
+          if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: filename });
+            return true;
+          }
+        } catch {}
+      }
+
+      renderInfo.textContent =
+        "If you didn't get a download prompt: iOS may block direct PDF downloads. Use the Share sheet to Save to Files.";
+      return false;
     }
 
-    // ---------- VECTOR TRACE: raster -> SVG -> PDF ----------
-    // Build an SVG string from the uploaded image (using ImageTracer)
-    async function traceToSvgString(tracePPI, colors, detail) {
+    // ---------- VECTOR: trace ONCE to an SVG STAMP ----------
+    function computeTraceMaxDimPx(tileInches) {
+      // Target ~300 px per inch of tile, then clamp to iOS-safe range
+      const target = Math.round(tileInches * 300);
+      return clamp(target, MIN_TRACE_DIM_PX, MAX_TRACE_DIM_PX_CAP);
+    }
+
+    async function traceToSvgStamp(traceMaxDimPx, colors, detail) {
       if (!originalBitmap || !originalMeta) throw new Error("No image loaded.");
 
-      // Render to a trace canvas at a chosen PPI *based on intended output*.
-      // We trace the SOURCE itself downscaled to a manageable size; this impacts detail and performance.
-      // tracePPI is essentially "pixels per inch in the trace canvas" for the final PDF size.
-      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
-      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+      const srcW = originalMeta.w;
+      const srcH = originalMeta.h;
 
-      const maxW = Math.max(1, Math.round(outWIn * tracePPI));
-      const maxH = Math.max(1, Math.round(outHIn * tracePPI));
-
-      // To keep trace work bounded, clamp to a max dimension
-      const MAX_TRACE_DIM = 2800; // good for iOS; increase on desktop
-      let tW = maxW, tH = maxH;
-      const scaleDown = Math.max(tW / MAX_TRACE_DIM, tH / MAX_TRACE_DIM, 1);
-      tW = Math.round(tW / scaleDown);
-      tH = Math.round(tH / scaleDown);
+      const scaleDown = Math.max(srcW / traceMaxDimPx, srcH / traceMaxDimPx, 1);
+      const tW = Math.max(1, Math.round(srcW / scaleDown));
+      const tH = Math.max(1, Math.round(srcH / scaleDown));
 
       const tcan = document.createElement("canvas");
       tcan.width = tW;
       tcan.height = tH;
       const tctx = tcan.getContext("2d");
 
-      // White background so trace has a stable base (change if you need transparent)
+      // White background helps produce clean paths
       tctx.fillStyle = "#ffffff";
       tctx.fillRect(0, 0, tW, tH);
 
-      // Draw the original image boxed into the trace canvas (same as your tile boxing idea)
-      // Here we fill the whole page with the original image boxed (not tiling yet).
-      const srcW = originalMeta.w, srcH = originalMeta.h;
-      const scale = Math.min(tW / srcW, tH / srcH);
-      const dW = Math.round(srcW * scale);
-      const dH = Math.round(srcH * scale);
-      const dx = Math.round((tW - dW) / 2);
-      const dy = Math.round((tH - dH) / 2);
-
       tctx.imageSmoothingEnabled = true;
       tctx.imageSmoothingQuality = "high";
-      tctx.drawImage(originalBitmap, dx, dy, dW, dH);
+      tctx.drawImage(originalBitmap, 0, 0, tW, tH);
 
-      // ImageTracer options:
-      // - numberofcolors: controls palette size (smaller = simpler SVG)
-      // - pathomit: omit small paths (helps reduce noise)
-      // - ltres/qtres: line/curve fitting tolerances (higher = simpler)
-      // - scale: keep 1 so SVG is in same pixel space as the trace canvas
       const options = {
-        numberofcolors: clamp(Math.round(colors), 2, 32),
+        numberofcolors: clamp(Math.round(colors), 2, 16),
         scale: 1,
-        pathomit: 10, // increase to simplify more
-        ltres: 1 / clamp(detail, 0.5, 3), // detail up -> smaller tolerance
-        qtres: 1 / clamp(detail, 0.5, 3),
-        // "rightangleenhance" can help logos
+        pathomit: 12,
+        ltres: 1 / clamp(detail, 0.6, 3),
+        qtres: 1 / clamp(detail, 0.6, 3),
         rightangleenhance: true
       };
 
-      // Convert to SVG string
       const svgStr = ImageTracer.imagedataToSVG(
         tctx.getImageData(0, 0, tW, tH),
         options
       );
 
-      // Wrap into an SVG that we can scale to inches in jsPDF
-      // Ensure viewBox is correct; ImageTracer typically includes one, but we enforce.
-      // We'll return as-is; jsPDF svg() will parse it.
-      return svgStr;
+      const holder = document.createElement("div");
+      holder.style.position = "fixed";
+      holder.style.left = "-99999px";
+      holder.style.top = "-99999px";
+      holder.innerHTML = svgStr.trim();
+      document.body.appendChild(holder);
+
+      const svgEl = holder.querySelector("svg");
+      if (!svgEl) {
+        document.body.removeChild(holder);
+        throw new Error("Trace did not produce an SVG element.");
+      }
+
+      // Ensure consistent scaling (boxed)
+      svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      svgEl.setAttribute("viewBox", `0 0 ${tW} ${tH}`);
+
+      // Detach for reuse
+      svgEl.remove();
+      document.body.removeChild(holder);
+
+      return svgEl;
     }
 
-    // ---------- RASTER TILE PDF (fallback / optional) ----------
+    async function tileSvgPatternToPdf(pdf, svgStamp, outWIn, outHIn, tileInches, gapIn) {
+      const tilePt = tileInches * 72;
+      const stepPt = ((tileInches + gapIn) / 1.5) * 72;
+
+      const pageWPt = outWIn * 72;
+      const pageHPt = outHIn * 72;
+
+      const cols = Math.ceil(pageWPt / stepPt) + 1;
+      const rows = Math.ceil(pageHPt / stepPt) + 1;
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (((r + c) % 2) !== 0) continue;
+
+          const xPt = c * stepPt;
+          const yPt = r * stepPt;
+          if (xPt > pageWPt || yPt > pageHPt) continue;
+
+          // Place the same SVG into the square tile region
+          await pdf.svg(svgStamp, { x: xPt, y: yPt, width: tilePt, height: tilePt });
+        }
+      }
+    }
+
+    // ---------- Vector hex overlay (PDF) ----------
+    function drawHexOverlayPdf(pdf, outWIn, outHIn, diaIn) {
+      const rIn = diaIn / 2;
+      const xStep = diaIn;
+      const yStep = diaIn * Math.sqrt(3) / 2;
+
+      // ~0.01" stroke
+      pdf.setLineWidth(Math.max(0.5, 0.01 * 72));
+      // pdf.setDrawColor(0);
+
+      let row = 0;
+      for (let cy = -rIn; cy <= outHIn + rIn; cy += yStep, row++) {
+        const xOffset = (row % 2 === 0) ? 0 : xStep / 2;
+        for (let cx = -rIn + xOffset; cx <= outWIn + rIn; cx += xStep) {
+          pdf.circle(cx * 72, cy * 72, rIn * 72, "S");
+        }
+      }
+    }
+
+    // ---------- RASTER fallback: auto-efficient PPI ----------
+    function computeEfficientRasterPPI(outWIn, outHIn) {
+      if (!originalMeta) return RASTER_PPI_MAX;
+      const nativeW = originalMeta.w / outWIn;
+      const nativeH = originalMeta.h / outHIn;
+      const native = Math.min(nativeW, nativeH);
+      // about 2x native looks crisp without inventing too much
+      return clamp(Math.round(native * 2), RASTER_PPI_MIN, RASTER_PPI_MAX);
+    }
+
     function renderArtworkTileRaster(targetCtx, pxPerIn, cfg) {
-      const {
-        outWIn, outHIn,
-        tileInches, gapIn,
-        hexOn, circleDiaIn,
-        x0In, y0In, wIn, hIn
-      } = cfg;
+      const { tileInches, gapIn, hexOn, circleDiaIn, x0In, y0In, wIn, hIn } = cfg;
 
       const wPx = Math.max(1, Math.round(wIn * pxPerIn));
       const hPx = Math.max(1, Math.round(hIn * pxPerIn));
@@ -530,6 +581,7 @@
 
           if (x > wIn || y > hIn || x + tileInches < 0 || y + tileInches < 0) continue;
 
+          // boxed tile draw
           drawBoxedTileAtIn(targetCtx, pxPerIn, x, y, tileInches);
         }
       }
@@ -557,13 +609,17 @@
             targetCtx.stroke();
           }
         }
-
         targetCtx.restore();
       }
     }
 
-    // ---------- EXPORT PDF (vector mode or raster fallback) ----------
+    // ---------- EXPORT ----------
     async function exportNow() {
+      if (!originalBitmap || !originalMeta) {
+        renderInfo.textContent = "Upload an image first.";
+        return;
+      }
+
       const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
       const outHIn = parseInchesOrDefault(outHInEl.value, 11);
       const tileInches = parseInchesOrDefault(imgInEl.value, 1);
@@ -580,7 +636,6 @@
         return;
       }
 
-      // Use points for predictable svg sizing
       const wPt = outWIn * 72;
       const hPt = outHIn * 72;
 
@@ -591,76 +646,43 @@
         compress: true
       });
 
-      // VECTOR MODE
-      if (vectorToggleEl.checked) {
+      const estStamps = estimateVectorStamps(outWIn, outHIn, tileInches, gapIn);
+
+      // --- VECTOR PATH ---
+      if (vectorToggleEl.checked && estStamps <= MAX_VECTOR_STAMPS) {
         try {
-          renderInfo.textContent = "Vector mode: tracing image to SVG… (this may take a moment)";
-          const tracePPI = clamp(parseNumberOrDefault(tracePPIEl.value, 180), 80, 400);
-          const colors = clamp(parseNumberOrDefault(traceColorsEl.value, 8), 2, 32);
-          const detail = clamp(parseNumberOrDefault(traceDetailEl.value, 1.0), 0.5, 3.0);
+          const traceMaxDim = computeTraceMaxDimPx(tileInches);
+          renderInfo.textContent = `Vector: tracing once (max ${traceMaxDim}px)…`;
 
-          const svgStr = await traceToSvgString(tracePPI, colors, detail);
+          const svgStamp = await traceToSvgStamp(traceMaxDim, TRACE_COLORS, TRACE_DETAIL);
 
-          // Create an SVG element for jsPDF.svg()
-          const holder = document.createElement("div");
-          holder.style.position = "fixed";
-          holder.style.left = "-99999px";
-          holder.style.top = "-99999px";
-          holder.innerHTML = svgStr.trim();
-          document.body.appendChild(holder);
+          renderInfo.textContent = `Vector: tiling ${estStamps} stamps…`;
+          await tileSvgPatternToPdf(pdf, svgStamp, outWIn, outHIn, tileInches, gapIn);
 
-          const svgEl = holder.querySelector("svg");
-          if (!svgEl) throw new Error("Trace did not produce an SVG element.");
+          if (hexOn) drawHexOverlayPdf(pdf, outWIn, outHIn, circleDiaIn);
 
-          // Force SVG to scale cleanly to page
-          svgEl.setAttribute("width", String(wPt));
-          svgEl.setAttribute("height", String(hPt));
-          // Ensure viewBox exists; if not, infer from width/height
-          if (!svgEl.getAttribute("viewBox")) {
-            const vbW = Number(svgEl.getAttribute("width")) || 1000;
-            const vbH = Number(svgEl.getAttribute("height")) || 1000;
-            svgEl.setAttribute("viewBox", `0 0 ${vbW} ${vbH}`);
-          }
-
-          renderInfo.textContent = "Vector mode: embedding SVG into PDF…";
-
-          // pdf.svg returns a Promise
-          await pdf.svg(svgEl, { x: 0, y: 0, width: wPt, height: hPt });
-
-          document.body.removeChild(holder);
-
-          // Deliver to iOS (share/open)
+          renderInfo.textContent = "Vector PDF built. Sending download…";
           const blob = pdf.output("blob");
-          renderInfo.textContent = "Vector PDF built. Opening Share sheet…";
-          const shared = await shareBlobIfPossible(blob, filename);
-          if (!shared) {
-            openBlobInNewTab(blob);
-            renderInfo.textContent = "Opened PDF in a new tab. Use Share → Save to Files.";
-          } else {
-            renderInfo.textContent = "Shared! (Save to Files from the Share sheet.)";
-          }
+          await deliverPdfBlob(blob, filename);
           return;
-
         } catch (err) {
           console.error(err);
-          renderInfo.textContent =
-            "Vector export failed (trace or SVG render). Falling back to raster tiled PDF…";
-          // continue into raster fallback
+          renderInfo.textContent = "Vector failed. Falling back to raster tiled PDF…";
+          // fall through to raster fallback
         }
+      } else if (vectorToggleEl.checked && estStamps > MAX_VECTOR_STAMPS) {
+        renderInfo.textContent = `Vector would place ~${estStamps} stamps (limit ${MAX_VECTOR_STAMPS}). Falling back to raster…`;
       }
 
-      // RASTER FALLBACK (tiled JPEG images in PDF)
-      renderInfo.textContent = "Raster PDF: building tiled pages…";
-
-      const rasterPPI = clamp(parseNumberOrDefault(tracePPIEl.value, PDF_RASTER_PPI_DEFAULT), 80, 300);
-      const tileIn = PDF_TILE_IN;
+      // --- RASTER FALLBACK (small, efficient) ---
+      const rasterPPI = computeEfficientRasterPPI(outWIn, outHIn);
+      const tileIn = RASTER_TILE_IN;
 
       const cols = Math.ceil(outWIn / tileIn);
       const rows = Math.ceil(outHIn / tileIn);
 
       const tileCanvas = document.createElement("canvas");
       let tctx = tileCanvas.getContext("2d");
-
       let count = 0;
       const total = cols * rows;
 
@@ -679,30 +701,21 @@
           tctx = tileCanvas.getContext("2d");
 
           renderArtworkTileRaster(tctx, rasterPPI, {
-            outWIn, outHIn,
-            tileInches, gapIn,
-            hexOn, circleDiaIn,
+            tileInches, gapIn, hexOn, circleDiaIn,
             x0In: x0, y0In: y0, wIn, hIn
           });
 
-          const dataUrl = tileCanvas.toDataURL("image/jpeg", PDF_JPEG_QUALITY);
-          // place at correct PT coords
+          const dataUrl = tileCanvas.toDataURL("image/jpeg", RASTER_JPEG_QUALITY);
           pdf.addImage(dataUrl, "JPEG", x0 * 72, y0 * 72, wIn * 72, hIn * 72);
 
           count++;
-          if (count % 10 === 0) renderInfo.textContent = `Raster PDF: ${count}/${total} tiles…`;
+          if (count % 8 === 0) renderInfo.textContent = `Raster PDF: ${count}/${total} tiles… (PPI ${rasterPPI})`;
         }
       }
 
+      renderInfo.textContent = `Raster PDF built (PPI ${rasterPPI}). Sending download…`;
       const blob = pdf.output("blob");
-      renderInfo.textContent = "PDF built. Opening Share sheet…";
-      const shared = await shareBlobIfPossible(blob, filename);
-      if (!shared) {
-        openBlobInNewTab(blob);
-        renderInfo.textContent = "Opened PDF in a new tab. Use Share → Save to Files.";
-      } else {
-        renderInfo.textContent = "Shared! (Save to Files from the Share sheet.)";
-      }
+      await deliverPdfBlob(blob, filename);
     }
 
     // ---------- pan/zoom preview ----------
@@ -798,8 +811,7 @@
     renderBtn.addEventListener('click', renderPreview);
     exportBtn.addEventListener('click', exportNow);
 
-    // Re-render preview when changing key fields (no auto redraw while typing is fine; this is light)
-    [imgInEl, gapInEl, outWInEl, outHInEl, circleDiaInEl, traceDetailEl, traceColorsEl, tracePPIEl].forEach(el => {
+    [imgInEl, gapInEl, outWInEl, outHInEl, circleDiaInEl].forEach(el => {
       el.addEventListener("change", renderPreview);
     });
     [hexToggleEl, vectorToggleEl].forEach(el => el.addEventListener("change", renderPreview));
