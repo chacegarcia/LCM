@@ -113,382 +113,376 @@
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <!-- <script type="module" src="https://github.com/chacegarcia/LCM/index.js"></script> -->
 
-  <script>
-	//import { changeDpiDataUrl } from './LCM/index.js';
-    const DPI = 400;
+<script>
+  const DPI = 400;                 // export DPI (true pixels = inches * DPI)
+  const PREVIEW_IN = 6;            // preview canvas represents 6" x 6" space
+  const PREVIEW_CSS_PX = 420;      // how big the preview looks on screen (pick any)
 
-    const fileInput = document.getElementById('fileInput');
-    const imgInEl = document.getElementById('imgIn');
-    const gapInEl = document.getElementById('gapIn');
-    const outWInEl = document.getElementById('outWIn');
-    const outHInEl = document.getElementById('outHIn');
-    const formatEl = document.getElementById('format');
-    //const tght = document.getElementById('Tight');
+  const fileInput = document.getElementById('fileInput');
+  const imgInEl = document.getElementById('imgIn');
+  const gapInEl = document.getElementById('gapIn');
+  const outWInEl = document.getElementById('outWIn');
+  const outHInEl = document.getElementById('outHIn');
+  const formatEl = document.getElementById('format');
 
-    const hexToggleEl = document.getElementById('hexToggle');
-    const circleDiaInEl = document.getElementById('circleDiaIn');
+  const hexToggleEl = document.getElementById('hexToggle');
+  const circleDiaInEl = document.getElementById('circleDiaIn');
 
-    const renderBtn = document.getElementById('renderBtn');
-    const exportBtn = document.getElementById('exportBtn');
+  const renderBtn = document.getElementById('renderBtn');
+  const exportBtn = document.getElementById('exportBtn');
 
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
 
-    const imgInfo = document.getElementById('imgInfo');
-    const renderInfo = document.getElementById('renderInfo');
+  const imgInfo = document.getElementById('imgInfo');
+  const renderInfo = document.getElementById('renderInfo');
 
-    // Cache the original upload
-    let originalBitmap = null; // ImageBitmap or HTMLImageElement
-    let originalMeta = null;   // { w, h }
+  // Cache the original upload
+  let originalBitmap = null; // ImageBitmap or HTMLImageElement
+  let originalMeta = null;   // { w, h }
+  let originalFileBaseName = "Artwork";
 
-    // Base filename for exports
-    let originalFileBaseName = "Artwork";
+  // ---------- units parsing ----------
+  function tryParseToInches(text) {
+    const raw = (text ?? "").toString().trim().toLowerCase();
+    if (!raw) return null;
+    const cleaned = raw.replace(/\s+/g, "");
 
-    // Returns null if input is empty/invalid while typing (prevents 0px issues)
-    function tryParseMeasureToPx(text) {
-      const raw = (text ?? "").toString().trim().toLowerCase();
-      if (!raw) return null;
-
-      const cleaned = raw.replace(/\s+/g, "");
-
-      // px: 400px
-      const pxMatch = cleaned.match(/^([0-9]*\.?[0-9]+)px$/);
-      if (pxMatch) {
-        const px = Number(pxMatch[1]);
-        return Number.isFinite(px) ? Math.round(px) : null;
-      }
-
-      // inches: 2, 2", 2in, 2inch, 2inches, .5, .5"
-      const inchMatch = cleaned.match(/^([0-9]*\.?[0-9]+)(in|inch|inches|")?$/);
-      if (inchMatch) {
-        const inches = Number(inchMatch[1]);
-        return Number.isFinite(inches) ? Math.round(inches * DPI) : null;
-      }
-
-      return null;
+    // px: 400px  -> inches = px / DPI
+    const pxMatch = cleaned.match(/^([0-9]*\.?[0-9]+)px$/);
+    if (pxMatch) {
+      const px = Number(pxMatch[1]);
+      return Number.isFinite(px) ? (px / DPI) : null;
     }
 
-    function parseMeasureToPxOrDefault(text, defaultInches) {
-      const px = tryParseMeasureToPx(text);
-      return (px === null) ? Math.round(defaultInches * DPI) : px;
+    // inches: 2, 2", 2in, .5"
+    const inchMatch = cleaned.match(/^([0-9]*\.?[0-9]+)(in|inch|inches|")?$/);
+    if (inchMatch) {
+      const inches = Number(inchMatch[1]);
+      return Number.isFinite(inches) ? inches : null;
     }
+    return null;
+  }
 
-    function parseMeasureToInchesForInfo(text, defaultInches) {
-      const raw = (text ?? "").toString().trim().toLowerCase();
-      if (!raw) return defaultInches;
+  function parseInchesOrDefault(text, defIn) {
+    const v = tryParseToInches(text);
+    return (v === null) ? defIn : v;
+  }
 
-      const cleaned = raw.replace(/\s+/g, "");
+  function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 
-      const pxMatch = cleaned.match(/^([0-9]*\.?[0-9]+)px$/);
-      if (pxMatch) {
-        const px = Number(pxMatch[1]);
-        return Number.isFinite(px) ? (px / DPI) : defaultInches;
-      }
+  // ---------- image load ----------
+  async function loadAndCacheOriginal(file) {
+    originalFileBaseName = (file.name || "Artwork").replace(/\.[^/.]+$/, "");
 
-      const inchMatch = cleaned.match(/^([0-9]*\.?[0-9]+)(in|inch|inches|")?$/);
-      if (inchMatch) {
-        const inches = Number(inchMatch[1]);
-        return Number.isFinite(inches) ? inches : defaultInches;
-      }
-
-      return defaultInches;
+    if (originalBitmap && typeof originalBitmap.close === "function") {
+      try { originalBitmap.close(); } catch {}
     }
+    originalBitmap = null;
+    originalMeta = null;
 
-    async function loadAndCacheOriginal(file) {
-      // Save filename without extension for export naming
-      originalFileBaseName = (file.name || "Artwork").replace(/\.[^/.]+$/, "");
-
-      // If we had an ImageBitmap before, close it (frees memory)
-      if (originalBitmap && typeof originalBitmap.close === "function") {
-        try { originalBitmap.close(); } catch {}
+    const url = URL.createObjectURL(file);
+    try {
+      if ("createImageBitmap" in window) {
+        const blob = await fetch(url).then(r => r.blob());
+        const bmp = await createImageBitmap(blob);
+        originalBitmap = bmp;
+        originalMeta = { w: bmp.width, h: bmp.height };
+        imgInfo.textContent = `Loaded: ${bmp.width}×${bmp.height}px (cached as ImageBitmap).`;
+        return;
       }
+
+      await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          originalBitmap = img;
+          originalMeta = {
+            w: img.naturalWidth || img.width,
+            h: img.naturalHeight || img.height
+          };
+          imgInfo.textContent = `Loaded: ${originalMeta.w}×${originalMeta.h}px (cached as Image).`;
+          resolve();
+        };
+        img.onerror = reject;
+        img.src = url;
+      });
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  fileInput.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    imgInfo.textContent = "Loading...";
+    try {
+      await loadAndCacheOriginal(file);
+      renderPreview();
+    } catch (err) {
+      console.error(err);
       originalBitmap = null;
       originalMeta = null;
-
-      const url = URL.createObjectURL(file);
-      try {
-        if ("createImageBitmap" in window) {
-          const blob = await fetch(url).then(r => r.blob());
-          const bmp = await createImageBitmap(blob);
-          originalBitmap = bmp;
-          originalMeta = { w: bmp.width, h: bmp.height };
-          imgInfo.textContent = `Loaded: ${bmp.width}×${bmp.height}px (cached as ImageBitmap).`;
-          return;
-        }
-
-        await new Promise((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => {
-            originalBitmap = img;
-            originalMeta = {
-              w: img.naturalWidth || img.width,
-              h: img.naturalHeight || img.height
-            };
-            imgInfo.textContent = `Loaded: ${originalMeta.w}×${originalMeta.h}px (cached as Image).`;
-            resolve();
-          };
-          img.onerror = reject;
-          img.src = url;
-        });
-      } finally {
-        URL.revokeObjectURL(url);
-      }
+      imgInfo.textContent = "Failed to load image.";
     }
+  });
 
-    fileInput.addEventListener("change", async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
+  // ---------- core renderer (draws in INCHES) ----------
+  // This is the key: one renderer used for preview AND export.
+  function renderArtworkToContext(targetCtx, pxPerIn, outWIn, outHIn, tileIn, gapIn, hexOn, circleDiaIn) {
+    const wPx = Math.max(1, Math.round(outWIn * pxPerIn));
+    const hPx = Math.max(1, Math.round(outHIn * pxPerIn));
 
-      imgInfo.textContent = "Loading...";
-      try {
-        await loadAndCacheOriginal(file);
-        // Draw once after upload so you get a preview without needing to click
-        render();
-      } catch (err) {
-        console.error(err);
-        originalBitmap = null;
-        originalMeta = null;
-        imgInfo.textContent = "Failed to load image.";
-      }
-    });
+    // Clear + white background
+    targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+    targetCtx.clearRect(0, 0, wPx, hPx);
+    targetCtx.fillStyle = "#fff";
+    targetCtx.fillRect(0, 0, wPx, hPx);
 
-    // Draw original image letterboxed into a square tile (no stretching), scaled directly from original each draw
-    function drawLetterboxedTileAt(x, y, tilePx) {
+    // Draw using inch-units: transform inches -> pixels
+    targetCtx.setTransform(pxPerIn, 0, 0, pxPerIn, 0, 0);
+    targetCtx.imageSmoothingEnabled = true;
+    targetCtx.imageSmoothingQuality = "high";
+
+    // Helpers in inch-space
+    function drawLetterboxedTileAtIn(xIn, yIn, tileInches) {
+      if (!originalBitmap || !originalMeta) return;
+
       const srcW = originalMeta.w;
       const srcH = originalMeta.h;
 
+      const tilePx = tileInches * pxPerIn;
+
       const scale = Math.min(tilePx / srcW, tilePx / srcH);
-      const drawW = srcW * scale;
-      const drawH = srcH * scale;
+      const drawW = (srcW * scale) / pxPerIn; // back to inches for drawImage transform
+      const drawH = (srcH * scale) / pxPerIn;
 
-      const dx = x + (tilePx - drawW) / 2;
-      const dy = y + (tilePx - drawH) / 2;
+      const dx = xIn + (tileInches - drawW) / 2;
+      const dy = yIn + (tileInches - drawH) / 2;
 
-      ctx.drawImage(originalBitmap, dx, dy, drawW, drawH);
+      targetCtx.drawImage(originalBitmap, dx, dy, drawW, drawH);
     }
 
-    function drawCheckerboardTiles(wPx, hPx, tilePx, gapPx) {
-      const stepPx = (tilePx + gapPx) / 1.5; // tght;
-      const cols = Math.ceil(wPx / stepPx);
-      const rows = Math.ceil(hPx / stepPx);
+    function drawCheckerboardTilesIn() {
+      if (!originalBitmap || !originalMeta) return null;
+
+      const stepIn = (tileIn + gapIn) / 1.5;
+      const cols = Math.ceil(outWIn / stepIn);
+      const rows = Math.ceil(outHIn / stepIn);
 
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           if (((r + c) % 2) !== 0) continue;
 
-          const x = c * stepPx;
-          const y = r * stepPx;
-          if (x > wPx || y > hPx) continue;
+          const xIn = c * stepIn;
+          const yIn = r * stepIn;
+          if (xIn > outWIn || yIn > outHIn) continue;
 
-          drawLetterboxedTileAt(x, y, tilePx);
+          drawLetterboxedTileAtIn(xIn, yIn, tileIn);
         }
       }
-
-      return { cols, rows, stepPx };
+      return { cols, rows, stepIn };
     }
 
-    function drawHexCircleOverlay(wPx, hPx, diaPx) {
-      const r = diaPx / 2;
-      const xStep = diaPx;
-      const yStep = diaPx * Math.sqrt(3) / 2;
+    function drawHexCircleOverlayIn() {
+      const dia = circleDiaIn;
+      const r = dia / 2;
+      const xStep = dia;
+      const yStep = dia * Math.sqrt(3) / 2;
 
-      ctx.save();
-      ctx.lineWidth = Math.max(1, Math.round(DPI * 0.01)); // ~0.01"
-      ctx.globalAlpha = 0.65;
+      targetCtx.save();
+      targetCtx.lineWidth = Math.max(1 / pxPerIn, 0.01); // ~0.01" min
+      targetCtx.globalAlpha = 0.65;
 
       const startY = -r;
       let row = 0;
 
-      for (let cy = startY; cy <= hPx + r; cy += yStep, row++) {
+      for (let cy = startY; cy <= outHIn + r; cy += yStep, row++) {
         const xOffset = (row % 2 === 0) ? 0 : xStep / 2;
         const startX = -r + xOffset;
 
-        for (let cx = startX; cx <= wPx + r; cx += xStep) {
-          ctx.beginPath();
-          ctx.arc(cx, cy, r, 0, Math.PI * 2);
-          ctx.stroke();
+        for (let cx = startX; cx <= outWIn + r; cx += xStep) {
+          targetCtx.beginPath();
+          targetCtx.arc(cx, cy, r, 0, Math.PI * 2);
+          targetCtx.stroke();
         }
       }
 
-      ctx.restore();
+      targetCtx.restore();
     }
 
-    function render() {
-      const wPx = Math.max(1, parseMeasureToPxOrDefault(outWInEl.value, 8.5));
-      const hPx = Math.max(1, parseMeasureToPxOrDefault(outHInEl.value, 11));
-      const tilePx = Math.max(1, parseMeasureToPxOrDefault(imgInEl.value, 1));
-      const gapPx = Math.max(0, parseMeasureToPxOrDefault(gapInEl.value, 0));
+    const tileMeta = drawCheckerboardTilesIn();
+    if (hexOn) drawHexCircleOverlayIn();
 
-      canvas.width = wPx;
-      canvas.height = hPx;
+    // return info for UI
+    return { wPx, hPx, tileMeta };
+  }
 
-      // White background (important for JPG/PDF)
-      ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, wPx, hPx);
-      ctx.restore();
+  // ---------- preview setup (6" x 6") ----------
+  function setupPreviewCanvas() {
+    canvas.style.width = PREVIEW_CSS_PX + "px";
+    canvas.style.height = PREVIEW_CSS_PX + "px";
 
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(PREVIEW_CSS_PX * dpr);
+    canvas.height = Math.round(PREVIEW_CSS_PX * dpr);
 
-      let tileMeta = null;
-      if (originalBitmap && originalMeta) {
-        tileMeta = drawCheckerboardTiles(wPx, hPx, tilePx, gapPx);
-      }
+    // draw in device pixels; we'll control transforms ourselves
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    return { dpr };
+  }
 
-      if (hexToggleEl.checked) {
-        const diaPx = Math.max(1, parseMeasureToPxOrDefault(circleDiaInEl.value, 6.25));
-        drawHexCircleOverlay(wPx, hPx, diaPx);
-      }
+  function renderPreview() {
+    const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+    const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+    const tileIn = parseInchesOrDefault(imgInEl.value, 1);
+    const gapIn = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
 
-      const wIn = parseMeasureToInchesForInfo(outWInEl.value, 8.5);
-      const hIn = parseMeasureToInchesForInfo(outHInEl.value, 11);
-      const tileIn = parseMeasureToInchesForInfo(imgInEl.value, 1);
-      const gapInches = parseMeasureToInchesForInfo(gapInEl.value, 0);
+    const hexOn = !!hexToggleEl.checked;
+    const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
 
-      const parts = [];
-      parts.push(`Canvas: ${wPx}×${hPx}px (${wIn.toFixed(2)}×${hIn.toFixed(2)} in @ ${DPI} DPI).`);
-      parts.push(`Tile: ${tilePx}px (${tileIn.toFixed(2)}"). Gap: ${gapPx}px (${gapInches.toFixed(2)}").`);
+    const { dpr } = setupPreviewCanvas();
 
-      if (originalMeta) {
-        parts.push(`Source: ${originalMeta.w}×${originalMeta.h}px (scaled from original each draw).`);
-      } else {
-        parts.push(`Upload an image to see tiles.`);
-      }
+    // preview “pixels per inch” (in device pixels) for a 6" wide preview
+    const previewPxPerIn = (canvas.width / PREVIEW_IN);
 
-      if (tileMeta) parts.push(`Grid approx: ${tileMeta.cols}×${tileMeta.rows}. Step: ${tileMeta.stepPx}px.`);
+    // Fit the *output* into the 6"x6" preview area (letterbox)
+    const fitScale = Math.min(PREVIEW_IN / outWIn, PREVIEW_IN / outHIn);
+    const drawWIn = outWIn * fitScale;
+    const drawHIn = outHIn * fitScale;
+    const offsetXIn = (PREVIEW_IN - drawWIn) / 2;
+    const offsetYIn = (PREVIEW_IN - drawHIn) / 2;
 
-      if (hexToggleEl.checked) {
-        const diaIn = parseMeasureToInchesForInfo(circleDiaInEl.value, 6.25);
-        const diaPx = parseMeasureToPxOrDefault(circleDiaInEl.value, 6.25);
-        parts.push(`Hex overlay ON: diameter ${diaPx}px (${diaIn.toFixed(2)}").`);
-      } else {
-        parts.push(`Hex overlay OFF.`);
-      }
+    // Clear preview background
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      renderInfo.textContent = parts.join(" ");
+    // Now render the artwork into a virtual output-size surface,
+    // but mapped into the 6"x6" preview by adjusting pxPerIn and translating.
+    // We'll do this by temporarily shifting origin and scaling inches.
+    ctx.save();
+    // inches -> device pixels, with fit scale and offset
+    ctx.setTransform(previewPxPerIn, 0, 0, previewPxPerIn, 0, 0);
+    ctx.translate(offsetXIn, offsetYIn);
+    ctx.scale(fitScale, fitScale);
+
+    // Use the core renderer with the preview's pxPerIn in the *current* transform:
+    // Our core renderer sets its own transform, so instead we render to an offscreen
+    // at preview resolution of the OUTPUT and then draw it into the transformed preview.
+    ctx.restore();
+
+    // Offscreen just for preview-of-output (fast enough, still not your “export backend”)
+    const prevOut = document.createElement("canvas");
+    const prevPxPerInOut = previewPxPerIn * fitScale;
+    prevOut.width = Math.max(1, Math.round(outWIn * prevPxPerInOut));
+    prevOut.height = Math.max(1, Math.round(outHIn * prevPxPerInOut));
+    const pctx = prevOut.getContext("2d");
+
+    const info = renderArtworkToContext(
+      pctx,
+      prevPxPerInOut,
+      outWIn, outHIn,
+      tileIn, gapIn,
+      hexOn, circleDiaIn
+    );
+
+    // Draw into preview canvas letterboxed
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const dx = Math.round(offsetXIn * previewPxPerIn);
+    const dy = Math.round(offsetYIn * previewPxPerIn);
+    const dw = Math.round(drawWIn * previewPxPerIn);
+    const dh = Math.round(drawHIn * previewPxPerIn);
+    ctx.drawImage(prevOut, dx, dy, dw, dh);
+
+    // UI text
+    const parts = [];
+    parts.push(`Preview: ${PREVIEW_IN}"×${PREVIEW_IN}" (letterboxed).`);
+    parts.push(`Output: ${outWIn.toFixed(2)}×${outHIn.toFixed(2)} in.`);
+    parts.push(`Tile: ${tileIn.toFixed(2)}". Gap: ${gapIn.toFixed(2)}".`);
+    parts.push(`Export DPI: ${DPI}. Export pixels: ${Math.round(outWIn*DPI)}×${Math.round(outHIn*DPI)}.`);
+    if (originalMeta) parts.push(`Source: ${originalMeta.w}×${originalMeta.h}px.`);
+    else parts.push(`Upload an image to see tiles.`);
+    if (info?.tileMeta) parts.push(`Grid approx: ${info.tileMeta.cols}×${info.tileMeta.rows}.`);
+    parts.push(hexOn ? `Hex overlay ON (${circleDiaIn.toFixed(2)}").` : `Hex overlay OFF.`);
+    renderInfo.textContent = parts.join(" ");
+  }
+
+  // ---------- export backend renderer ----------
+  function downloadBlob(blob, filename) {
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  async function exportNow() {
+    // Always refresh preview (but export uses backend render)
+    renderPreview();
+
+    const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+    const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+    const tileIn = parseInchesOrDefault(imgInEl.value, 1);
+    const gapIn = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
+
+    const hexOn = !!hexToggleEl.checked;
+    const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
+
+    const fmt = formatEl.value;
+    const base = `${originalFileBaseName} Random Pattern`;
+
+    // Backend/offscreen canvas at TRUE export DPI
+    const exp = document.createElement("canvas");
+    exp.width = Math.max(1, Math.round(outWIn * DPI));
+    exp.height = Math.max(1, Math.round(outHIn * DPI));
+    const ectx = exp.getContext("2d");
+
+    renderArtworkToContext(
+      ectx,
+      DPI,
+      outWIn, outHIn,
+      tileIn, gapIn,
+      hexOn, circleDiaIn
+    );
+
+    if (fmt === "png") {
+      exp.toBlob((blob) => blob && downloadBlob(blob, `${base}.png`), "image/png", 1.0);
+      return;
     }
 
-    function downloadBlob(blob, filename) {
-      const a = document.createElement("a");
-      const url = URL.createObjectURL(blob);
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+    if (fmt === "jpg") {
+      exp.toBlob((blob) => blob && downloadBlob(blob, `${base}.jpg`), "image/jpeg", 0.95);
+      return;
     }
 
-    function exportNow() 
-	{
-		  // Always render before export to make sure the content is updated
-		  render();			
-			// Convert canvas to data URL and add it to the PDF at the correct size
-			//const dataUrl = canvas.toDataURL("image/png");
-			//const ExPPI = changeDpiDataUrl(dataUrl, DPI);
+    if (fmt === "pdf") {
+      const { jsPDF } = window.jspdf;
 
+      // Use inches directly so page size is correct
+      const pdf = new jsPDF({
+        orientation: (outWIn >= outHIn) ? "landscape" : "portrait",
+        unit: "in",
+        format: [outWIn, outHIn]
+      });
 
-		  const base = `${originalFileBaseName} Random Pattern`;
-		  const fmt = formatEl.value;
+      const dataUrl = exp.toDataURL("image/png"); // backend render
+      pdf.addImage(dataUrl, "PNG", 0, 0, outWIn, outHIn);
+      pdf.save(`${base}.pdf`);
+      return;
+    }
+  }
 
-		  // Retrieve width and height in inches from the global variables
-		  const widthInches = parseFloat(outWInEl.value);  // Width in inches from outWInEl
-		  const heightInches = parseFloat(outHInEl.value);  // Height in inches from outHInEl
+  // Buttons
+  exportBtn.addEventListener('click', exportNow);
+  renderBtn.addEventListener('click', renderPreview);
 
-		  // Check if the input values are valid numbers
-		  if (isNaN(widthInches) || isNaN(heightInches)) {
-			console.error("Invalid width or height values");
-			return;
-		  }
-
-		  // Calculate pixel dimensions based on DPI
-		  const widthPx = Math.round(widthInches * DPI);  // Width in pixels based on DPI
-		  const heightPx = Math.round(heightInches * DPI);  // Height in pixels based on DPI
-
-		  // Set the canvas internal resolution (in pixels)
-		  canvas.width = widthPx;
-		  canvas.height = heightPx;
-
-		  // Set the canvas display size (this is what the user sees, doesn't affect the DPI)
-		  canvas.style.width = `${widthInches}in`;
-		  canvas.style.height = `${heightInches}in`;
-
-		  // Scale the drawing context to ensure the canvas drawing respects the DPI
-		  const ctx = canvas.getContext('2d');
-		  ctx.scale(DPI, DPI);
-
-		  // Now export based on the selected format (PNG, JPG, PDF)
-
-		if (fmt === "png") {
-		    // Set the desired DPI by scaling the canvas resolution (e.g., 300 DPI)
-		    const scaleFactor = 1;  // For example, 2x for higher resolution
-		
-		    // Create a temporary canvas to scale the image
-		    const tempCanvas = document.createElement('canvas');
-		    const ctx = tempCanvas.getContext('2d');
-		
-		    // Set the size of the temporary canvas to match the original canvas, but scaled
-		    tempCanvas.width = canvas.width * scaleFactor;
-		    tempCanvas.height = canvas.height * scaleFactor;
-		
-		    // Scale and draw the original canvas onto the tempCanvas
-		    ctx.scale(scaleFactor, scaleFactor);
-		    ctx.drawImage(canvas, 0, 0);
-		
-		    // Export the scaled canvas as PNG
-		    tempCanvas.toBlob(function(blob) {
-		        downloadBlob(blob, `${base}.png`);
-		    }, "image/png");
-		
-		    return;
-		}
-
-		if (fmt === "jpg") {
-		    // Set the desired DPI by scaling the canvas resolution (e.g., 300 DPI)
-		    const scaleFactor = 1;  // For example, 2x for higher resolution
-		
-		    // Create a temporary canvas to scale the image
-		    const tempCanvas = document.createElement('canvas');
-		    const ctx = tempCanvas.getContext('2d');
-		
-		    // Set the size of the temporary canvas to match the original canvas, but scaled
-		    tempCanvas.width = canvas.width * scaleFactor;
-		    tempCanvas.height = canvas.height * scaleFactor;
-		
-		    // Scale and draw the original canvas onto the tempCanvas
-		    ctx.scale(scaleFactor, scaleFactor);
-		    ctx.drawImage(canvas, 0, 0);
-		
-		    // Export the scaled canvas as PNG
-		    tempCanvas.toBlob(function(blob) {
-		        downloadBlob(blob, `${base}.jpg`);
-		    }, "image/jpg");
-		
-		    return;
-		}
-		
-		  if (fmt === "pdf") {
-			const { jsPDF } = window.jspdf;
-
-			// Calculate page size in points (72 points per inch)
-			const wPt = widthInches * 72 * DPI;  // Width in points, scaled by DPI
-			const hPt = heightInches * 72 * DPI;  // Height in points, scaled by DPI
-
-			// Create PDF with the correct dimensions
-			const pdf = new jsPDF({
-			  orientation: (wPt >= hPt) ? "landscape" : "portrait",
-			  unit: "pt",
-			  format: [wPt, hPt]
-			});
-			pdf.addImage(ExPPI, "PNG", 0, 0, wPt, hPt);
-			pdf.save(`${base}.pdf`);
-		  }
-		render();	
-		}
-		exportBtn.addEventListener('click', exportNow);
-		renderBtn.addEventListener('click', render);
-  </script>
+  // Initial preview
+  renderPreview();
+</script>
 </body>
 </html>
