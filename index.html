@@ -434,65 +434,77 @@
     }
 
     async function traceToSvgStamp(traceMaxDimPx, colors, detail) {
-      if (!originalBitmap || !originalMeta) throw new Error("No image loaded.");
+  if (!originalBitmap || !originalMeta) throw new Error("No image loaded.");
 
-      const srcW = originalMeta.w;
-      const srcH = originalMeta.h;
+  const srcW = originalMeta.w;
+  const srcH = originalMeta.h;
 
-      const scaleDown = Math.max(srcW / traceMaxDimPx, srcH / traceMaxDimPx, 1);
-      const tW = Math.max(1, Math.round(srcW / scaleDown));
-      const tH = Math.max(1, Math.round(srcH / scaleDown));
+  const scaleDown = Math.max(srcW / traceMaxDimPx, srcH / traceMaxDimPx, 1);
+  const tW = Math.max(1, Math.round(srcW / scaleDown));
+  const tH = Math.max(1, Math.round(srcH / scaleDown));
 
-      const tcan = document.createElement("canvas");
-      tcan.width = tW;
-      tcan.height = tH;
-      const tctx = tcan.getContext("2d");
+  const tcan = document.createElement("canvas");
+  tcan.width = tW;
+  tcan.height = tH;
+  const tctx = tcan.getContext("2d");
 
-      // White background helps produce clean paths
-      tctx.fillStyle = "#ffffff";
-      tctx.fillRect(0, 0, tW, tH);
+  // Chroma-key background (unlikely to be in real logos)
+  const KEY_HEX = "#ff00ff";
+  tctx.fillStyle = KEY_HEX;
+  tctx.fillRect(0, 0, tW, tH);
 
-      tctx.imageSmoothingEnabled = true;
-      tctx.imageSmoothingQuality = "high";
-      tctx.drawImage(originalBitmap, 0, 0, tW, tH);
+  // Draw image (keeps its colors; transparent parts show KEY_HEX)
+  tctx.imageSmoothingEnabled = true;
+  tctx.imageSmoothingQuality = "high";
+  tctx.drawImage(originalBitmap, 0, 0, tW, tH);
 
-      const options = {
-        numberofcolors: clamp(Math.round(colors), 2, 16),
-        scale: 1,
-        pathomit: 12,
-        ltres: 1 / clamp(detail, 0.6, 3),
-        qtres: 1 / clamp(detail, 0.6, 3),
-        rightangleenhance: true
-      };
+  const options = {
+    numberofcolors: clamp(Math.round(colors), 2, 32),
+    scale: 1,
+    pathomit: 12,
+    ltres: 1 / clamp(detail, 0.6, 3),
+    qtres: 1 / clamp(detail, 0.6, 3),
+    rightangleenhance: true
+  };
 
-      const svgStr = ImageTracer.imagedataToSVG(
-        tctx.getImageData(0, 0, tW, tH),
-        options
-      );
+  let svgStr = ImageTracer.imagedataToSVG(
+    tctx.getImageData(0, 0, tW, tH),
+    options
+  );
 
-      const holder = document.createElement("div");
-      holder.style.position = "fixed";
-      holder.style.left = "-99999px";
-      holder.style.top = "-99999px";
-      holder.innerHTML = svgStr.trim();
-      document.body.appendChild(holder);
+  // Strip chroma-key shapes from the SVG.
+  // ImageTracer often uses rgb(255,0,255) for that key color.
+  // Remove any element that has fill="rgb(255,0,255)" or fill="#ff00ff"
+  svgStr = svgStr
+    // remove paths/polygons/rects with key fill in rgb form
+    .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
+    .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*\/>\s*/gsi, "")
+    // remove hex form (some builds output hex)
+    .replace(/<[^>]+fill="#ff00ff"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
+    .replace(/<[^>]+fill="#ff00ff"[^>]*\/>\s*/gsi, "");
 
-      const svgEl = holder.querySelector("svg");
-      if (!svgEl) {
-        document.body.removeChild(holder);
-        throw new Error("Trace did not produce an SVG element.");
-      }
+  const holder = document.createElement("div");
+  holder.style.position = "fixed";
+  holder.style.left = "-99999px";
+  holder.style.top = "-99999px";
+  holder.innerHTML = svgStr.trim();
+  document.body.appendChild(holder);
 
-      // Ensure consistent scaling (boxed)
-      svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
-      svgEl.setAttribute("viewBox", `0 0 ${tW} ${tH}`);
+  const svgEl = holder.querySelector("svg");
+  if (!svgEl) {
+    document.body.removeChild(holder);
+    throw new Error("Trace did not produce an SVG element.");
+  }
 
-      // Detach for reuse
-      svgEl.remove();
-      document.body.removeChild(holder);
+  // Keep the stamp boxed (no crop, no stretch)
+  svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svgEl.setAttribute("viewBox", `0 0 ${tW} ${tH}`);
 
-      return svgEl;
-    }
+  svgEl.remove();
+  document.body.removeChild(holder);
+
+  return svgEl;
+}
 
     async function tileSvgPatternToPdf(pdf, svgStamp, outWIn, outHIn, tileInches, gapIn) {
       const tilePt = tileInches * 72;
