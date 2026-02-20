@@ -3,8 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>HP Artwork Generator (300 DPI, HQ)</title>
-  <link rel="icon" href="favicon.ico" type="image/x-icon"/>
+  <title>HP Artwork Generator (PDF Only + Vector Outline Mode)</title>
   <style>
     :root { --gap: 16px; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
@@ -33,6 +32,7 @@
     .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .toggleLine { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid #d9d9d9; border-radius: 10px; }
     .toggleLine span { font-size: 14px; }
+    .row3 { display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
   </style>
 </head>
 <body>
@@ -46,7 +46,7 @@
       </div>
 
       <div class="field">
-        <label>Tile size (inches) @ 300 DPI</label>
+        <label>Tile size (inches)</label>
         <input id="imgIn" type="text" value='1"' />
       </div>
 
@@ -78,50 +78,73 @@
       </div>
 
       <div class="field">
-        <label>Export format</label>
-        <select id="format">
-          <option value="png">PNG</option>
-          <option value="jpg">JPG</option>
-          <option value="pdf">PDF</option>
-        </select>
+        <label>PDF Export Mode</label>
+
+        <div class="toggleLine">
+          <input id="vectorToggle" type="checkbox" />
+          <span>Vector outline mode (trace to SVG → PDF)</span>
+        </div>
+
+        <div style="height:10px;"></div>
+
+        <div class="row3">
+          <div class="field">
+            <label>Trace detail</label>
+            <input id="traceDetail" type="text" value="1.0" />
+          </div>
+          <div class="field">
+            <label>Colors</label>
+            <input id="traceColors" type="text" value="8" />
+          </div>
+          <div class="field">
+            <label>Trace PPI</label>
+            <input id="tracePPI" type="text" value="180" />
+          </div>
+        </div>
+
+        <div class="meta">
+          Notes: Vector mode creates a true vector PDF (tiny + sharp), but depends on the raster quality.
+          For logos/line-art it’s excellent. For photos it can get heavy.
+        </div>
       </div>
 
       <div class="btnRow">
-        <button id="renderBtn">Reload Canvas</button>
-        <button id="exportBtn">Export</button>
+        <button id="renderBtn">Reload Preview</button>
+        <button id="exportBtn">Export PDF</button>
       </div>
 
       <div class="meta" id="renderInfo">
-        Tip: Edit inputs freely, then click <b>Reload Canvas</b> to redraw.
+        Tip: Drag preview to pan. Pinch/scroll to zoom. Export is PDF-only.
       </div>
     </div>
 
     <!-- RIGHT COLUMN -->
     <div class="stage">
       <div class="hint">
-        Preview is a <b>6.25&quot;×6.25&quot; window</b> into the full output. Drag to pan. Pinch/scroll to zoom.
-        <br/>If output is too large for in-browser PNG/JPG, the app auto-switches to <b>tiled PDF</b> and disables PNG/JPG.
+        Preview is a <b>6&quot;×6&quot; window</b> into the full output. Drag to pan. Pinch/scroll to zoom.
       </div>
       <canvas id="canvas"></canvas>
     </div>
   </div>
 
-  <!-- jsPDF for PDF export -->
+  <!-- jsPDF -->
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <!-- svg2pdf plugin for jsPDF (enables pdf.svg(...)) -->
+  <script src="https://cdn.jsdelivr.net/npm/svg2pdf.js@2.0.0/dist/svg2pdf.umd.min.js"></script>
+  <!-- ImageTracer (raster → SVG) -->
+  <script src="https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.js"></script>
 
   <script>
     // ---------------- SETTINGS ----------------
-    const DPI = 300;               // export DPI (true output pixels = inches * DPI)
-    const PREVIEW_IN = 6.25;          // preview window is 6.25" x 6.25" (in output inches)
-    const PREVIEW_CSS_PX = 420;    // visual size of the preview on screen
-    const PREVIEW_PPI = 150;       // preview render PPI (safe on mobile)
+    const DPI = 400;               // used for preview info only; PDF export is vector OR tiled raster fallback
+    const PREVIEW_IN = 6;          // preview window is 6" x 6"
+    const PREVIEW_CSS_PX = 420;
+    const PREVIEW_PPI = 170;       // preview render PPI (safe on mobile)
 
-    // In-browser bitmap caps (conservative for iOS Safari)
-    const MAX_EXPORT_DIM = 8192;           // per-dimension cap
-    const MAX_EXPORT_PIXELS = 60_000_000;  // total pixel cap
-
-    // Tiled PDF tile size (inches). Smaller = safer, bigger = faster.
-    const PDF_TILE_IN = 10;
+    // Raster fallback PDF tiling (only used if vector mode is off OR vector tracing fails)
+    const PDF_TILE_IN = 3;         // larger = fewer tiles, usually ok on iPad
+    const PDF_RASTER_PPI_DEFAULT = 180; // raster-in-PDF resolution (keeps files sane)
+    const PDF_JPEG_QUALITY = 0.82; // raster tiles compression (smaller PDF). Increase for crisper edges.
     // ------------------------------------------------
 
     const fileInput = document.getElementById('fileInput');
@@ -129,10 +152,14 @@
     const gapInEl = document.getElementById('gapIn');
     const outWInEl = document.getElementById('outWIn');
     const outHInEl = document.getElementById('outHIn');
-    const formatEl = document.getElementById('format');
 
     const hexToggleEl = document.getElementById('hexToggle');
     const circleDiaInEl = document.getElementById('circleDiaIn');
+
+    const vectorToggleEl = document.getElementById('vectorToggle');
+    const traceDetailEl = document.getElementById('traceDetail');
+    const traceColorsEl = document.getElementById('traceColors');
+    const tracePPIEl = document.getElementById('tracePPI');
 
     const renderBtn = document.getElementById('renderBtn');
     const exportBtn = document.getElementById('exportBtn');
@@ -143,94 +170,58 @@
     const imgInfo = document.getElementById('imgInfo');
     const renderInfo = document.getElementById('renderInfo');
 
-    // Cache the original upload
-    let originalBitmap = null; // ImageBitmap or HTMLImageElement
-    let originalMeta = null;   // { w, h }
+    let originalBitmap = null;
+    let originalMeta = null;
     let originalFileBaseName = "Artwork";
 
     // Preview camera (in OUTPUT inches)
     const previewCam = { xIn: 0, yIn: 0, zoom: 1 };
 
-    // -------- unit parsing: return inches (supports px or inches) --------
+    // ---------- util ----------
     function tryParseToInches(text) {
       const raw = (text ?? "").toString().trim().toLowerCase();
       if (!raw) return null;
       const cleaned = raw.replace(/\s+/g, "");
-
       const pxMatch = cleaned.match(/^([0-9]*\.?[0-9]+)px$/);
       if (pxMatch) {
         const px = Number(pxMatch[1]);
         return Number.isFinite(px) ? (px / DPI) : null;
       }
-
       const inchMatch = cleaned.match(/^([0-9]*\.?[0-9]+)(in|inch|inches|")?$/);
       if (inchMatch) {
         const inches = Number(inchMatch[1]);
         return Number.isFinite(inches) ? inches : null;
       }
-
       return null;
     }
-
     function parseInchesOrDefault(text, defIn) {
       const v = tryParseToInches(text);
       return (v === null) ? defIn : v;
     }
-
+    function parseNumberOrDefault(text, def) {
+      const n = Number((text ?? "").toString().trim());
+      return Number.isFinite(n) ? n : def;
+    }
     function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 
     function clampPreviewCam(outWIn, outHIn) {
       const viewWIn = PREVIEW_IN / previewCam.zoom;
       const viewHIn = PREVIEW_IN / previewCam.zoom;
-
       const maxX = Math.max(0, outWIn - viewWIn);
       const maxY = Math.max(0, outHIn - viewHIn);
-
       previewCam.xIn = clamp(previewCam.xIn, 0, maxX);
       previewCam.yIn = clamp(previewCam.yIn, 0, maxY);
     }
 
-    // -------- export cap enforcement (auto-disable png/jpg, auto-select pdf) --------
-    function enforceExportCaps(showMsg = false) {
-      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
-      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
-
-      const expWpx = Math.round(outWIn * DPI);
-      const expHpx = Math.round(outHIn * DPI);
-      const totalPx = expWpx * expHpx;
-
-      const overCap =
-        expWpx > MAX_EXPORT_DIM ||
-        expHpx > MAX_EXPORT_DIM ||
-        totalPx > MAX_EXPORT_PIXELS;
-
-      const pngOpt = formatEl.querySelector('option[value="png"]');
-      const jpgOpt = formatEl.querySelector('option[value="jpg"]');
-      const pdfOpt = formatEl.querySelector('option[value="pdf"]');
-
-      if (overCap) {
-        if (pngOpt) pngOpt.disabled = true;
-        if (jpgOpt) jpgOpt.disabled = true;
-        if (pdfOpt) pdfOpt.disabled = false;
-
-        if (formatEl.value === "png" || formatEl.value === "jpg") {
-          formatEl.value = "pdf";
-        }
-
-        if (showMsg) {
-          renderInfo.textContent =
-            `Output ${outWIn}×${outHIn} in @ ${DPI} DPI = ${expWpx}×${expHpx}px (~${(totalPx/1e6).toFixed(0)} MP). ` +
-            `PNG/JPG disabled (browser cap). PDF auto-selected (tiled).`;
-        }
-      } else {
-        if (pngOpt) pngOpt.disabled = false;
-        if (jpgOpt) jpgOpt.disabled = false;
-      }
-
-      return { overCap, expWpx, expHpx, totalPx, outWIn, outHIn };
+    function setupPreviewCanvas() {
+      canvas.style.width = PREVIEW_CSS_PX + "px";
+      canvas.style.height = PREVIEW_CSS_PX + "px";
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(PREVIEW_CSS_PX * dpr);
+      canvas.height = Math.round(PREVIEW_CSS_PX * dpr);
+      ctx.setTransform(1,0,0,1,0,0);
     }
 
-    // -------- image load/cache --------
     async function loadAndCacheOriginal(file) {
       originalFileBaseName = (file.name || "Artwork").replace(/\.[^/.]+$/, "");
 
@@ -250,15 +241,11 @@
           imgInfo.textContent = `Loaded: ${bmp.width}×${bmp.height}px (cached as ImageBitmap).`;
           return;
         }
-
         await new Promise((resolve, reject) => {
           const img = new Image();
           img.onload = () => {
             originalBitmap = img;
-            originalMeta = {
-              w: img.naturalWidth || img.width,
-              h: img.naturalHeight || img.height
-            };
+            originalMeta = { w: img.naturalWidth || img.width, h: img.naturalHeight || img.height };
             imgInfo.textContent = `Loaded: ${originalMeta.w}×${originalMeta.h}px (cached as Image).`;
             resolve();
           };
@@ -273,43 +260,28 @@
     fileInput.addEventListener("change", async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
-
       imgInfo.textContent = "Loading...";
       try {
         await loadAndCacheOriginal(file);
-        previewCam.xIn = 0;
-        previewCam.yIn = 0;
-        previewCam.zoom = 1;
+        previewCam.xIn = 0; previewCam.yIn = 0; previewCam.zoom = 1;
         renderPreview();
       } catch (err) {
         console.error(err);
-        originalBitmap = null;
-        originalMeta = null;
+        originalBitmap = null; originalMeta = null;
         imgInfo.textContent = "Failed to load image.";
       }
     });
 
-    // -------- preview canvas setup (always 6"x6") --------
-    function setupPreviewCanvas() {
-      canvas.style.width = PREVIEW_CSS_PX + "px";
-      canvas.style.height = PREVIEW_CSS_PX + "px";
-
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.round(PREVIEW_CSS_PX * dpr);
-      canvas.height = Math.round(PREVIEW_CSS_PX * dpr);
-
-      ctx.setTransform(1,0,0,1,0,0);
-    }
-
-    // -------- draw letterboxed tile at (x,y) in INCHES --------
-    function drawLetterboxedTileAtIn(targetCtx, pxPerIn, xIn, yIn, tileIn) {
+    // ---------- drawing ----------
+    // BOXED (no stretch, no crop): contain/letterbox into the tile
+    function drawBoxedTileAtIn(targetCtx, pxPerIn, xIn, yIn, tileIn) {
       if (!originalBitmap || !originalMeta) return;
 
       const srcW = originalMeta.w;
       const srcH = originalMeta.h;
       const tilePx = tileIn * pxPerIn;
 
-      const scale = Math.min(tilePx / srcW, tilePx / srcH);
+      const scale = Math.min(tilePx / srcW, tilePx / srcH); // contain
       const drawWIn = (srcW * scale) / pxPerIn;
       const drawHIn = (srcH * scale) / pxPerIn;
 
@@ -319,7 +291,6 @@
       targetCtx.drawImage(originalBitmap, dx, dy, drawWIn, drawHIn);
     }
 
-    // -------- render ONLY a viewport (camera window) --------
     function renderArtworkViewport(targetCtx, pxPerIn, cfg) {
       const { outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn, camXIn, camYIn, viewWIn, viewHIn } = cfg;
 
@@ -357,7 +328,7 @@
 
           if (x > viewWIn || y > viewHIn || x + tileInches < 0 || y + tileInches < 0) continue;
 
-          drawLetterboxedTileAtIn(targetCtx, pxPerIn, x, y, tileInches);
+          drawBoxedTileAtIn(targetCtx, pxPerIn, x, y, tileInches);
         }
       }
 
@@ -389,67 +360,138 @@
         targetCtx.restore();
       }
 
-      return { wPx, hPx, approxCols, approxRows, stepIn };
+      return { approxCols, approxRows, stepIn };
     }
 
-    // -------- render FULL output (for bitmap export only, under cap) --------
-    function renderArtworkFull(targetCtx, pxPerIn, outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn) {
-      const wPx = Math.max(1, Math.round(outWIn * pxPerIn));
-      const hPx = Math.max(1, Math.round(outHIn * pxPerIn));
+    function renderPreview() {
+      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+      const tileInches = parseInchesOrDefault(imgInEl.value, 1);
+      const gapIn  = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
+      const hexOn  = !!hexToggleEl.checked;
+      const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
 
-      targetCtx.setTransform(1,0,0,1,0,0);
-      targetCtx.clearRect(0,0,wPx,hPx);
-      targetCtx.fillStyle = "#fff";
-      targetCtx.fillRect(0,0,wPx,hPx);
+      clampPreviewCam(outWIn, outHIn);
+      setupPreviewCanvas();
 
-      targetCtx.setTransform(pxPerIn,0,0,pxPerIn,0,0);
-      targetCtx.imageSmoothingEnabled = true;
-      targetCtx.imageSmoothingQuality = "high";
+      const viewWIn = PREVIEW_IN / previewCam.zoom;
+      const viewHIn = PREVIEW_IN / previewCam.zoom;
 
-      const stepIn = (tileInches + gapIn) / 1.5;
-      const cols = Math.ceil(outWIn / stepIn);
-      const rows = Math.ceil(outHIn / stepIn);
+      const off = document.createElement("canvas");
+      off.width  = Math.max(1, Math.round(viewWIn * PREVIEW_PPI));
+      off.height = Math.max(1, Math.round(viewHIn * PREVIEW_PPI));
+      const octx = off.getContext("2d");
 
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          if (((r + c) % 2) !== 0) continue;
-          const xIn = c * stepIn;
-          const yIn = r * stepIn;
-          if (xIn > outWIn || yIn > outHIn) continue;
-          drawLetterboxedTileAtIn(targetCtx, pxPerIn, xIn, yIn, tileInches);
-        }
-      }
+      const meta = renderArtworkViewport(octx, PREVIEW_PPI, {
+        outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn,
+        camXIn: previewCam.xIn, camYIn: previewCam.yIn,
+        viewWIn, viewHIn
+      });
 
-      if (hexOn) {
-        const dia = circleDiaIn;
-        const rr = dia / 2;
-        const xStep = dia;
-        const yStep = dia * Math.sqrt(3)/2;
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
 
-        targetCtx.save();
-        targetCtx.lineWidth = Math.max(1/pxPerIn, 0.01);
-        targetCtx.globalAlpha = 0.65;
-
-        const startY = -rr;
-        let row = 0;
-        for (let cy = startY; cy <= outHIn + rr; cy += yStep, row++) {
-          const xOffset = (row % 2 === 0) ? 0 : xStep/2;
-          const startX = -rr + xOffset;
-          for (let cx = startX; cx <= outWIn + rr; cx += xStep) {
-            targetCtx.beginPath();
-            targetCtx.arc(cx, cy, rr, 0, Math.PI*2);
-            targetCtx.stroke();
-          }
-        }
-
-        targetCtx.restore();
-      }
-
-      return { cols, rows, stepIn, wPx, hPx };
+      const parts = [];
+      parts.push(`Preview: ${viewWIn.toFixed(2)}"×${viewHIn.toFixed(2)}" (zoom ${previewCam.zoom.toFixed(2)}×).`);
+      parts.push(`Pan: x=${previewCam.xIn.toFixed(2)}", y=${previewCam.yIn.toFixed(2)}".`);
+      parts.push(`Output: ${outWIn.toFixed(2)}×${outHIn.toFixed(2)} in.`);
+      if (originalMeta) parts.push(`Source: ${originalMeta.w}×${originalMeta.h}px.`);
+      parts.push(`Tile: ${tileInches.toFixed(2)}". Gap: ${gapIn.toFixed(2)}".`);
+      parts.push(`Vector mode: ${vectorToggleEl.checked ? "ON" : "OFF"} (PDF only).`);
+      parts.push(`Viewport tiles checked ~ ${meta.approxCols}×${meta.approxRows}.`);
+      renderInfo.textContent = parts.join(" ");
     }
 
-    // -------- render a TILE region for PDF assembly (safe for huge sizes) --------
-    function renderArtworkTile(targetCtx, pxPerIn, cfg) {
+    // ---------- iOS-friendly PDF delivery ----------
+    async function shareBlobIfPossible(blob, filename) {
+      if (!navigator.share) return false;
+      try {
+        const file = new File([blob], filename, { type: blob.type || "application/pdf" });
+        if (navigator.canShare && !navigator.canShare({ files: [file] })) return false;
+        await navigator.share({ files: [file], title: filename });
+        return true;
+      } catch { return false; }
+    }
+    function openBlobInNewTab(blob) {
+      const url = URL.createObjectURL(blob);
+      const w = window.open(url, "_blank");
+      if (!w) window.location.href = url;
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    }
+
+    // ---------- VECTOR TRACE: raster -> SVG -> PDF ----------
+    // Build an SVG string from the uploaded image (using ImageTracer)
+    async function traceToSvgString(tracePPI, colors, detail) {
+      if (!originalBitmap || !originalMeta) throw new Error("No image loaded.");
+
+      // Render to a trace canvas at a chosen PPI *based on intended output*.
+      // We trace the SOURCE itself downscaled to a manageable size; this impacts detail and performance.
+      // tracePPI is essentially "pixels per inch in the trace canvas" for the final PDF size.
+      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
+
+      const maxW = Math.max(1, Math.round(outWIn * tracePPI));
+      const maxH = Math.max(1, Math.round(outHIn * tracePPI));
+
+      // To keep trace work bounded, clamp to a max dimension
+      const MAX_TRACE_DIM = 2800; // good for iOS; increase on desktop
+      let tW = maxW, tH = maxH;
+      const scaleDown = Math.max(tW / MAX_TRACE_DIM, tH / MAX_TRACE_DIM, 1);
+      tW = Math.round(tW / scaleDown);
+      tH = Math.round(tH / scaleDown);
+
+      const tcan = document.createElement("canvas");
+      tcan.width = tW;
+      tcan.height = tH;
+      const tctx = tcan.getContext("2d");
+
+      // White background so trace has a stable base (change if you need transparent)
+      tctx.fillStyle = "#ffffff";
+      tctx.fillRect(0, 0, tW, tH);
+
+      // Draw the original image boxed into the trace canvas (same as your tile boxing idea)
+      // Here we fill the whole page with the original image boxed (not tiling yet).
+      const srcW = originalMeta.w, srcH = originalMeta.h;
+      const scale = Math.min(tW / srcW, tH / srcH);
+      const dW = Math.round(srcW * scale);
+      const dH = Math.round(srcH * scale);
+      const dx = Math.round((tW - dW) / 2);
+      const dy = Math.round((tH - dH) / 2);
+
+      tctx.imageSmoothingEnabled = true;
+      tctx.imageSmoothingQuality = "high";
+      tctx.drawImage(originalBitmap, dx, dy, dW, dH);
+
+      // ImageTracer options:
+      // - numberofcolors: controls palette size (smaller = simpler SVG)
+      // - pathomit: omit small paths (helps reduce noise)
+      // - ltres/qtres: line/curve fitting tolerances (higher = simpler)
+      // - scale: keep 1 so SVG is in same pixel space as the trace canvas
+      const options = {
+        numberofcolors: clamp(Math.round(colors), 2, 32),
+        scale: 1,
+        pathomit: 10, // increase to simplify more
+        ltres: 1 / clamp(detail, 0.5, 3), // detail up -> smaller tolerance
+        qtres: 1 / clamp(detail, 0.5, 3),
+        // "rightangleenhance" can help logos
+        rightangleenhance: true
+      };
+
+      // Convert to SVG string
+      const svgStr = ImageTracer.imagedataToSVG(
+        tctx.getImageData(0, 0, tW, tH),
+        options
+      );
+
+      // Wrap into an SVG that we can scale to inches in jsPDF
+      // Ensure viewBox is correct; ImageTracer typically includes one, but we enforce.
+      // We'll return as-is; jsPDF svg() will parse it.
+      return svgStr;
+    }
+
+    // ---------- RASTER TILE PDF (fallback / optional) ----------
+    function renderArtworkTileRaster(targetCtx, pxPerIn, cfg) {
       const {
         outWIn, outHIn,
         tileInches, gapIn,
@@ -488,7 +530,7 @@
 
           if (x > wIn || y > hIn || x + tileInches < 0 || y + tileInches < 0) continue;
 
-          drawLetterboxedTileAtIn(targetCtx, pxPerIn, x, y, tileInches);
+          drawBoxedTileAtIn(targetCtx, pxPerIn, x, y, tileInches);
         }
       }
 
@@ -520,244 +562,99 @@
       }
     }
 
-    // -------- PREVIEW RENDER (viewport only; safe on mobile) --------
-    function renderPreview() {
-      const cap = enforceExportCaps(false);
-
-      const outWIn = cap.outWIn;
-      const outHIn = cap.outHIn;
-      const tileInches = parseInchesOrDefault(imgInEl.value, 1);
-      const gapIn  = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
-      const hexOn  = !!hexToggleEl.checked;
-      const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
-
-      clampPreviewCam(outWIn, outHIn);
-      setupPreviewCanvas();
-
-      const viewWIn = PREVIEW_IN / previewCam.zoom;
-      const viewHIn = PREVIEW_IN / previewCam.zoom;
-
-      const off = document.createElement("canvas");
-      off.width  = Math.max(1, Math.round(viewWIn * PREVIEW_PPI));
-      off.height = Math.max(1, Math.round(viewHIn * PREVIEW_PPI));
-      const octx = off.getContext("2d");
-
-      const meta = renderArtworkViewport(octx, PREVIEW_PPI, {
-        outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn,
-        camXIn: previewCam.xIn,
-        camYIn: previewCam.yIn,
-        viewWIn,
-        viewHIn
-      });
-
-      ctx.setTransform(1,0,0,1,0,0);
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      ctx.drawImage(off, 0, 0, canvas.width, canvas.height);
-
-      const parts = [];
-      parts.push(`Preview: ${viewWIn.toFixed(2)}"×${viewHIn.toFixed(2)}" (zoom ${previewCam.zoom.toFixed(2)}×).`);
-      parts.push(`Pan: x=${previewCam.xIn.toFixed(2)}", y=${previewCam.yIn.toFixed(2)}".`);
-      parts.push(`Output: ${outWIn.toFixed(2)}×${outHIn.toFixed(2)} in @ ${DPI} DPI → ${cap.expWpx}×${cap.expHpx}px (~${(cap.totalPx/1e6).toFixed(0)} MP).`);
-      parts.push(cap.overCap ? `PNG/JPG disabled → PDF tiled export.` : `PNG/JPG enabled.`);
-      parts.push(`Tile: ${tileInches.toFixed(2)}". Gap: ${gapIn.toFixed(2)}".`);
-      if (originalMeta) parts.push(`Source: ${originalMeta.w}×${originalMeta.h}px.`);
-      else parts.push(`Upload an image to see tiles.`);
-      parts.push(hexOn ? `Hex overlay ON (${circleDiaIn.toFixed(2)}").` : `Hex overlay OFF.`);
-      parts.push(`Viewport tiles checked ~ ${meta.approxCols}×${meta.approxRows}.`);
-      renderInfo.textContent = parts.join(" ");
-    }
-
-    // -------- Download helper (best-effort on iOS) --------
-    function downloadBlob(blob, filename) {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.rel = "noopener";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-
-      // fallback open
-      setTimeout(() => {
-        try { window.open(url, "_blank"); } catch {}
-        setTimeout(() => URL.revokeObjectURL(url), 4000);
-      }, 250);
-    }
-
-    function canvasToBlob(canvasEl, mime, quality) {
-      return new Promise((resolve) => canvasEl.toBlob(resolve, mime, quality));
-    }
-    function u32be(n){ return new Uint8Array([(n>>>24)&255,(n>>>16)&255,(n>>>8)&255,n&255]); }
-
-function crc32(bytes) {
-  let c = 0xffffffff;
-  for (const b of bytes) {
-    c ^= b;
-    for (let k=0;k<8;k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
-  }
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-// --- PNG: inject pHYs chunk for DPI ---
-async function setPngDpi(pngBlob, dpi) {
-  const buf = new Uint8Array(await pngBlob.arrayBuffer());
-
-  // PNG signature
-  const sig = [137,80,78,71,13,10,26,10];
-  for (let i=0;i<8;i++) if (buf[i] !== sig[i]) return pngBlob;
-
-  const ppm = Math.round(dpi * 39.37007874); // pixels per meter
-  const type = new TextEncoder().encode("pHYs");
-  const data = new Uint8Array(9);
-
-  // X ppm
-  data[0]=(ppm>>>24)&255; data[1]=(ppm>>>16)&255; data[2]=(ppm>>>8)&255; data[3]=ppm&255;
-  // Y ppm
-  data[4]=(ppm>>>24)&255; data[5]=(ppm>>>16)&255; data[6]=(ppm>>>8)&255; data[7]=ppm&255;
-  data[8]=1; // unit meter
-
-  const crcInput = new Uint8Array(type.length + data.length);
-  crcInput.set(type, 0);
-  crcInput.set(data, type.length);
-  const crc = crc32(crcInput);
-
-  const chunk = new Uint8Array(4 + 4 + data.length + 4);
-  chunk.set(u32be(data.length), 0);
-  chunk.set(type, 4);
-  chunk.set(data, 8);
-  chunk.set(u32be(crc), 8 + data.length);
-
-  // insert after IHDR
-  const ihdrLen = (buf[8]<<24)|(buf[9]<<16)|(buf[10]<<8)|buf[11];
-  const ihdrTotal = 12 + ihdrLen; // len+type+data+crc = 12+dataLen
-  const insertAt = 8 + ihdrTotal;
-
-  const out = new Uint8Array(buf.length + chunk.length);
-  out.set(buf.slice(0, insertAt), 0);
-  out.set(chunk, insertAt);
-  out.set(buf.slice(insertAt), insertAt + chunk.length);
-
-  return new Blob([out], { type: "image/png" });
-}
-
-// --- JPEG: set JFIF density to DPI (or add JFIF if missing) ---
-async function setJpegDpi(jpegBlob, dpi) {
-  const buf = new Uint8Array(await jpegBlob.arrayBuffer());
-
-  // must start with SOI
-  if (!(buf[0] === 0xFF && buf[1] === 0xD8)) return jpegBlob;
-
-  // find APP0 JFIF marker (FFE0)
-  let i = 2;
-  while (i + 4 < buf.length) {
-    if (buf[i] !== 0xFF) break;
-    const marker = buf[i+1];
-    // SOS or EOI stops header scan
-    if (marker === 0xDA || marker === 0xD9) break;
-
-    const len = (buf[i+2] << 8) | buf[i+3];
-    if (marker === 0xE0 && i + 4 + len <= buf.length) {
-      // Check "JFIF\0"
-      const id = buf.slice(i+4, i+9);
-      const isJFIF = id[0]===0x4A && id[1]===0x46 && id[2]===0x49 && id[3]===0x46 && id[4]===0x00;
-      if (isJFIF) {
-        // JFIF layout: [i+4..] "JFIF\0" (5)
-        // version (2) @ i+9,i+10
-        // units (1) @ i+11 (0=none,1=dpi,2=dpcm)
-        // Xdensity (2) @ i+12,i+13
-        // Ydensity (2) @ i+14,i+15
-        const out = buf.slice(); // copy
-        out[i+11] = 1; // dpi
-        out[i+12] = (dpi >>> 8) & 255;
-        out[i+13] = dpi & 255;
-        out[i+14] = (dpi >>> 8) & 255;
-        out[i+15] = dpi & 255;
-        return new Blob([out], { type: "image/jpeg" });
-      }
-    }
-    i += 2 + len;
-  }
-
-  // If no JFIF found, add a minimal APP0 JFIF segment after SOI
-  const app0 = new Uint8Array(18);
-  app0[0]=0xFF; app0[1]=0xE0; // APP0
-  app0[2]=0x00; app0[3]=0x10; // length=16 bytes after length field
-  // "JFIF\0"
-  app0[4]=0x4A; app0[5]=0x46; app0[6]=0x49; app0[7]=0x46; app0[8]=0x00;
-  // version 1.01
-  app0[9]=0x01; app0[10]=0x01;
-  // units=dpi
-  app0[11]=0x01;
-  // Xdensity, Ydensity
-  app0[12]=(dpi>>>8)&255; app0[13]=dpi&255;
-  app0[14]=(dpi>>>8)&255; app0[15]=dpi&255;
-  // Xthumbnail, Ythumbnail
-  app0[16]=0x00; app0[17]=0x00;
-
-  const out = new Uint8Array(buf.length + app0.length);
-  out.set(buf.slice(0,2), 0);
-  out.set(app0, 2);
-  out.set(buf.slice(2), 2 + app0.length);
-
-  return new Blob([out], { type: "image/jpeg" });
-}
-    // -------- EXPORT: bitmap under cap, otherwise tiled PDF --------
+    // ---------- EXPORT PDF (vector mode or raster fallback) ----------
     async function exportNow() {
-      const cap = enforceExportCaps(true);
-      const outWIn = cap.outWIn;
-      const outHIn = cap.outHIn;
-
+      const outWIn = parseInchesOrDefault(outWInEl.value, 8.5);
+      const outHIn = parseInchesOrDefault(outHInEl.value, 11);
       const tileInches = parseInchesOrDefault(imgInEl.value, 1);
       const gapIn  = Math.max(0, parseInchesOrDefault(gapInEl.value, 0));
       const hexOn  = !!hexToggleEl.checked;
       const circleDiaIn = parseInchesOrDefault(circleDiaInEl.value, 6.25);
 
       const base = `${originalFileBaseName} Random Pattern`;
+      const filename = `${base}.pdf`;
 
-      // Auto force PDF when over cap
-      if (cap.overCap) formatEl.value = "pdf";
-
-      const fmt = formatEl.value;
-
-      // Bitmap export only if under cap
-      if (!cap.overCap && (fmt === "png" || fmt === "jpg")) {
-      const exp = document.createElement("canvas");
-      exp.width = cap.expWpx;
-      exp.height = cap.expHpx;
-    
-      const ectx = exp.getContext("2d");
-      renderArtworkFull(ectx, DPI, outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn);
-    
-      if (fmt === "png") {
-        let blob = await canvasToBlob(exp, "image/png", 1.0);
-        if (!blob) { renderInfo.textContent = "PNG export failed (null blob)."; return; }
-        blob = await setPngDpi(blob, DPI);
-        downloadBlob(blob, `${base}.png`);
-        return;
-      } else {
-        let blob = await canvasToBlob(exp, "image/jpeg", 0.9);
-        if (!blob) { renderInfo.textContent = "JPG export failed (null blob)."; return; }
-        blob = await setJpegDpi(blob, DPI);
-        downloadBlob(blob, `${base}.jpg`);
-        return;
-      }
-    }
-
-      // Tiled PDF (works for huge sizes like 50x96)
       const { jsPDF } = window.jspdf || {};
       if (!jsPDF) {
         renderInfo.textContent = "PDF export failed: jsPDF not loaded.";
         return;
       }
 
+      // Use points for predictable svg sizing
+      const wPt = outWIn * 72;
+      const hPt = outHIn * 72;
+
       const pdf = new jsPDF({
-        orientation: (outWIn >= outHIn) ? "landscape" : "portrait",
-        unit: "in",
-        format: [outWIn, outHIn]
+        orientation: (wPt >= hPt) ? "landscape" : "portrait",
+        unit: "pt",
+        format: [wPt, hPt],
+        compress: true
       });
 
+      // VECTOR MODE
+      if (vectorToggleEl.checked) {
+        try {
+          renderInfo.textContent = "Vector mode: tracing image to SVG… (this may take a moment)";
+          const tracePPI = clamp(parseNumberOrDefault(tracePPIEl.value, 180), 80, 400);
+          const colors = clamp(parseNumberOrDefault(traceColorsEl.value, 8), 2, 32);
+          const detail = clamp(parseNumberOrDefault(traceDetailEl.value, 1.0), 0.5, 3.0);
+
+          const svgStr = await traceToSvgString(tracePPI, colors, detail);
+
+          // Create an SVG element for jsPDF.svg()
+          const holder = document.createElement("div");
+          holder.style.position = "fixed";
+          holder.style.left = "-99999px";
+          holder.style.top = "-99999px";
+          holder.innerHTML = svgStr.trim();
+          document.body.appendChild(holder);
+
+          const svgEl = holder.querySelector("svg");
+          if (!svgEl) throw new Error("Trace did not produce an SVG element.");
+
+          // Force SVG to scale cleanly to page
+          svgEl.setAttribute("width", String(wPt));
+          svgEl.setAttribute("height", String(hPt));
+          // Ensure viewBox exists; if not, infer from width/height
+          if (!svgEl.getAttribute("viewBox")) {
+            const vbW = Number(svgEl.getAttribute("width")) || 1000;
+            const vbH = Number(svgEl.getAttribute("height")) || 1000;
+            svgEl.setAttribute("viewBox", `0 0 ${vbW} ${vbH}`);
+          }
+
+          renderInfo.textContent = "Vector mode: embedding SVG into PDF…";
+
+          // pdf.svg returns a Promise
+          await pdf.svg(svgEl, { x: 0, y: 0, width: wPt, height: hPt });
+
+          document.body.removeChild(holder);
+
+          // Deliver to iOS (share/open)
+          const blob = pdf.output("blob");
+          renderInfo.textContent = "Vector PDF built. Opening Share sheet…";
+          const shared = await shareBlobIfPossible(blob, filename);
+          if (!shared) {
+            openBlobInNewTab(blob);
+            renderInfo.textContent = "Opened PDF in a new tab. Use Share → Save to Files.";
+          } else {
+            renderInfo.textContent = "Shared! (Save to Files from the Share sheet.)";
+          }
+          return;
+
+        } catch (err) {
+          console.error(err);
+          renderInfo.textContent =
+            "Vector export failed (trace or SVG render). Falling back to raster tiled PDF…";
+          // continue into raster fallback
+        }
+      }
+
+      // RASTER FALLBACK (tiled JPEG images in PDF)
+      renderInfo.textContent = "Raster PDF: building tiled pages…";
+
+      const rasterPPI = clamp(parseNumberOrDefault(tracePPIEl.value, PDF_RASTER_PPI_DEFAULT), 80, 300);
       const tileIn = PDF_TILE_IN;
+
       const cols = Math.ceil(outWIn / tileIn);
       const rows = Math.ceil(outHIn / tileIn);
 
@@ -767,8 +664,6 @@ async function setJpegDpi(jpegBlob, dpi) {
       let count = 0;
       const total = cols * rows;
 
-      renderInfo.textContent = `Tiled PDF export: ${cols}×${rows} tiles (${tileIn}" each).`;
-
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const x0 = c * tileIn;
@@ -776,35 +671,41 @@ async function setJpegDpi(jpegBlob, dpi) {
           const wIn = Math.min(tileIn, outWIn - x0);
           const hIn = Math.min(tileIn, outHIn - y0);
 
-          const wPx = Math.max(1, Math.round(wIn * DPI));
-          const hPx = Math.max(1, Math.round(hIn * DPI));
+          const wPx = Math.max(1, Math.round(wIn * rasterPPI));
+          const hPx = Math.max(1, Math.round(hIn * rasterPPI));
 
           if (tileCanvas.width !== wPx) tileCanvas.width = wPx;
           if (tileCanvas.height !== hPx) tileCanvas.height = hPx;
           tctx = tileCanvas.getContext("2d");
 
-          renderArtworkTile(tctx, DPI, {
+          renderArtworkTileRaster(tctx, rasterPPI, {
             outWIn, outHIn,
             tileInches, gapIn,
             hexOn, circleDiaIn,
             x0In: x0, y0In: y0, wIn, hIn
           });
 
-          const dataUrl = tileCanvas.toDataURL("image/png"); // tile-sized => safe
-          pdf.addImage(dataUrl, "PNG", x0, y0, wIn, hIn);
+          const dataUrl = tileCanvas.toDataURL("image/jpeg", PDF_JPEG_QUALITY);
+          // place at correct PT coords
+          pdf.addImage(dataUrl, "JPEG", x0 * 72, y0 * 72, wIn * 72, hIn * 72);
 
           count++;
-          if (count % 10 === 0) {
-            renderInfo.textContent = `Tiled PDF export: ${count}/${total} tiles...`;
-          }
+          if (count % 10 === 0) renderInfo.textContent = `Raster PDF: ${count}/${total} tiles…`;
         }
       }
 
-      pdf.save(`${base}.pdf`);
-      renderInfo.textContent = "Tiled PDF export started.";
+      const blob = pdf.output("blob");
+      renderInfo.textContent = "PDF built. Opening Share sheet…";
+      const shared = await shareBlobIfPossible(blob, filename);
+      if (!shared) {
+        openBlobInNewTab(blob);
+        renderInfo.textContent = "Opened PDF in a new tab. Use Share → Save to Files.";
+      } else {
+        renderInfo.textContent = "Shared! (Save to Files from the Share sheet.)";
+      }
     }
 
-    // -------- PAN + ZOOM (preview only) --------
+    // ---------- pan/zoom preview ----------
     let isPanning = false;
     let panStart = null;
 
@@ -852,10 +753,9 @@ async function setJpegDpi(jpegBlob, dpi) {
       renderPreview();
     }, { passive: false });
 
-    // Mobile pinch zoom (two pointers)
+    // Mobile pinch zoom
     const activePointers = new Map();
     let pinchStart = null;
-
     function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
     canvas.addEventListener("pointerdown", (e) => {
@@ -894,17 +794,17 @@ async function setJpegDpi(jpegBlob, dpi) {
       if (activePointers.size < 2) pinchStart = null;
     });
 
-    // -------- Buttons --------
+    // ---------- buttons ----------
     renderBtn.addEventListener('click', renderPreview);
     exportBtn.addEventListener('click', exportNow);
 
-    // Update cap state when typing sizes
-    [outWInEl, outHInEl].forEach(el => {
-      el.addEventListener("input", () => enforceExportCaps(true));
+    // Re-render preview when changing key fields (no auto redraw while typing is fine; this is light)
+    [imgInEl, gapInEl, outWInEl, outHInEl, circleDiaInEl, traceDetailEl, traceColorsEl, tracePPIEl].forEach(el => {
+      el.addEventListener("change", renderPreview);
     });
+    [hexToggleEl, vectorToggleEl].forEach(el => el.addEventListener("change", renderPreview));
 
     // Initial draw
-    enforceExportCaps(false);
     renderPreview();
   </script>
 </body>
