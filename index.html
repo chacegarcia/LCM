@@ -111,7 +111,7 @@
   <script>
     // ---------------- SETTINGS ----------------
     const DPI = 400;               // export DPI (true output pixels = inches * DPI)
-    const PREVIEW_IN = 6;          // preview window is 6" x 6" (in output inches)
+    const PREVIEW_IN = 6.25;          // preview window is 6.25" x 6.25" (in output inches)
     const PREVIEW_CSS_PX = 420;    // visual size of the preview on screen
     const PREVIEW_PPI = 150;       // preview render PPI (safe on mobile)
 
@@ -120,7 +120,7 @@
     const MAX_EXPORT_PIXELS = 60_000_000;  // total pixel cap
 
     // Tiled PDF tile size (inches). Smaller = safer, bigger = faster.
-    const PDF_TILE_IN = 2;
+    const PDF_TILE_IN = 6;
     // ------------------------------------------------
 
     const fileInput = document.getElementById('fileInput');
@@ -587,7 +587,120 @@
     function canvasToBlob(canvasEl, mime, quality) {
       return new Promise((resolve) => canvasEl.toBlob(resolve, mime, quality));
     }
+    function u32be(n){ return new Uint8Array([(n>>>24)&255,(n>>>16)&255,(n>>>8)&255,n&255]); }
 
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (const b of bytes) {
+    c ^= b;
+    for (let k=0;k<8;k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+// --- PNG: inject pHYs chunk for DPI ---
+async function setPngDpi(pngBlob, dpi) {
+  const buf = new Uint8Array(await pngBlob.arrayBuffer());
+
+  // PNG signature
+  const sig = [137,80,78,71,13,10,26,10];
+  for (let i=0;i<8;i++) if (buf[i] !== sig[i]) return pngBlob;
+
+  const ppm = Math.round(dpi * 39.37007874); // pixels per meter
+  const type = new TextEncoder().encode("pHYs");
+  const data = new Uint8Array(9);
+
+  // X ppm
+  data[0]=(ppm>>>24)&255; data[1]=(ppm>>>16)&255; data[2]=(ppm>>>8)&255; data[3]=ppm&255;
+  // Y ppm
+  data[4]=(ppm>>>24)&255; data[5]=(ppm>>>16)&255; data[6]=(ppm>>>8)&255; data[7]=ppm&255;
+  data[8]=1; // unit meter
+
+  const crcInput = new Uint8Array(type.length + data.length);
+  crcInput.set(type, 0);
+  crcInput.set(data, type.length);
+  const crc = crc32(crcInput);
+
+  const chunk = new Uint8Array(4 + 4 + data.length + 4);
+  chunk.set(u32be(data.length), 0);
+  chunk.set(type, 4);
+  chunk.set(data, 8);
+  chunk.set(u32be(crc), 8 + data.length);
+
+  // insert after IHDR
+  const ihdrLen = (buf[8]<<24)|(buf[9]<<16)|(buf[10]<<8)|buf[11];
+  const ihdrTotal = 12 + ihdrLen; // len+type+data+crc = 12+dataLen
+  const insertAt = 8 + ihdrTotal;
+
+  const out = new Uint8Array(buf.length + chunk.length);
+  out.set(buf.slice(0, insertAt), 0);
+  out.set(chunk, insertAt);
+  out.set(buf.slice(insertAt), insertAt + chunk.length);
+
+  return new Blob([out], { type: "image/png" });
+}
+
+// --- JPEG: set JFIF density to DPI (or add JFIF if missing) ---
+async function setJpegDpi(jpegBlob, dpi) {
+  const buf = new Uint8Array(await jpegBlob.arrayBuffer());
+
+  // must start with SOI
+  if (!(buf[0] === 0xFF && buf[1] === 0xD8)) return jpegBlob;
+
+  // find APP0 JFIF marker (FFE0)
+  let i = 2;
+  while (i + 4 < buf.length) {
+    if (buf[i] !== 0xFF) break;
+    const marker = buf[i+1];
+    // SOS or EOI stops header scan
+    if (marker === 0xDA || marker === 0xD9) break;
+
+    const len = (buf[i+2] << 8) | buf[i+3];
+    if (marker === 0xE0 && i + 4 + len <= buf.length) {
+      // Check "JFIF\0"
+      const id = buf.slice(i+4, i+9);
+      const isJFIF = id[0]===0x4A && id[1]===0x46 && id[2]===0x49 && id[3]===0x46 && id[4]===0x00;
+      if (isJFIF) {
+        // JFIF layout: [i+4..] "JFIF\0" (5)
+        // version (2) @ i+9,i+10
+        // units (1) @ i+11 (0=none,1=dpi,2=dpcm)
+        // Xdensity (2) @ i+12,i+13
+        // Ydensity (2) @ i+14,i+15
+        const out = buf.slice(); // copy
+        out[i+11] = 1; // dpi
+        out[i+12] = (dpi >>> 8) & 255;
+        out[i+13] = dpi & 255;
+        out[i+14] = (dpi >>> 8) & 255;
+        out[i+15] = dpi & 255;
+        return new Blob([out], { type: "image/jpeg" });
+      }
+    }
+    i += 2 + len;
+  }
+
+  // If no JFIF found, add a minimal APP0 JFIF segment after SOI
+  const app0 = new Uint8Array(18);
+  app0[0]=0xFF; app0[1]=0xE0; // APP0
+  app0[2]=0x00; app0[3]=0x10; // length=16 bytes after length field
+  // "JFIF\0"
+  app0[4]=0x4A; app0[5]=0x46; app0[6]=0x49; app0[7]=0x46; app0[8]=0x00;
+  // version 1.01
+  app0[9]=0x01; app0[10]=0x01;
+  // units=dpi
+  app0[11]=0x01;
+  // Xdensity, Ydensity
+  app0[12]=(dpi>>>8)&255; app0[13]=dpi&255;
+  app0[14]=(dpi>>>8)&255; app0[15]=dpi&255;
+  // Xthumbnail, Ythumbnail
+  app0[16]=0x00; app0[17]=0x00;
+
+  const out = new Uint8Array(buf.length + app0.length);
+  out.set(buf.slice(0,2), 0);
+  out.set(app0, 2);
+  out.set(buf.slice(2), 2 + app0.length);
+
+  return new Blob([out], { type: "image/jpeg" });
+}
     // -------- EXPORT: bitmap under cap, otherwise tiled PDF --------
     async function exportNow() {
       const cap = enforceExportCaps(true);
@@ -608,25 +721,27 @@
 
       // Bitmap export only if under cap
       if (!cap.overCap && (fmt === "png" || fmt === "jpg")) {
-        const exp = document.createElement("canvas");
-        exp.width = cap.expWpx;
-        exp.height = cap.expHpx;
-
-        const ectx = exp.getContext("2d");
-        renderArtworkFull(ectx, DPI, outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn);
-
-        if (fmt === "png") {
-          const blob = await canvasToBlob(exp, "image/png", 1.0);
-          if (!blob) { renderInfo.textContent = "PNG export failed (null blob). Try smaller size."; return; }
-          downloadBlob(blob, `${base}.png`);
-          return;
-        } else {
-          const blob = await canvasToBlob(exp, "image/jpeg", 0.95);
-          if (!blob) { renderInfo.textContent = "JPG export failed (null blob). Try smaller size."; return; }
-          downloadBlob(blob, `${base}.jpg`);
-          return;
-        }
+      const exp = document.createElement("canvas");
+      exp.width = cap.expWpx;
+      exp.height = cap.expHpx;
+    
+      const ectx = exp.getContext("2d");
+      renderArtworkFull(ectx, DPI, outWIn, outHIn, tileInches, gapIn, hexOn, circleDiaIn);
+    
+      if (fmt === "png") {
+        let blob = await canvasToBlob(exp, "image/png", 1.0);
+        if (!blob) { renderInfo.textContent = "PNG export failed (null blob)."; return; }
+        blob = await setPngDpi(blob, DPI);
+        downloadBlob(blob, `${base}.png`);
+        return;
+      } else {
+        let blob = await canvasToBlob(exp, "image/jpeg", 0.9);
+        if (!blob) { renderInfo.textContent = "JPG export failed (null blob)."; return; }
+        blob = await setJpegDpi(blob, DPI);
+        downloadBlob(blob, `${base}.jpg`);
+        return;
       }
+    }
 
       // Tiled PDF (works for huge sizes like 50x96)
       const { jsPDF } = window.jspdf || {};
