@@ -423,111 +423,91 @@
     }
 
     async function traceToSvgStamp(traceMaxDimPx, colors, detail) {
-      if (!originalBitmap || !originalMeta) throw new Error("No image loaded.");
+  if (!originalBitmap || !originalMeta) throw new Error("No image loaded.");
 
-      const srcW = originalMeta.w;
-      const srcH = originalMeta.h;
+  const srcW = originalMeta.w;
+  const srcH = originalMeta.h;
 
-      const scaleDown = Math.max(srcW / traceMaxDimPx, srcH / traceMaxDimPx, 1);
-      const tW = Math.max(1, Math.round(srcW / scaleDown));
-      const tH = Math.max(1, Math.round(srcH / scaleDown));
+  const scaleDown = Math.max(srcW / traceMaxDimPx, srcH / traceMaxDimPx, 1);
+  const tW = Math.max(1, Math.round(srcW / scaleDown));
+  const tH = Math.max(1, Math.round(srcH / scaleDown));
 
-      const tcan = document.createElement("canvas");
-      tcan.width = tW;
-      tcan.height = tH;
-      const tctx = tcan.getContext("2d", { willReadFrequently: true });
+  const tcan = document.createElement("canvas");
+  tcan.width = tW;
+  tcan.height = tH;
+  const tctx = tcan.getContext("2d", { willReadFrequently: true });
 
-      // Draw source preserving transparency
-      tctx.clearRect(0, 0, tW, tH);
-      tctx.imageSmoothingEnabled = true;
-      tctx.imageSmoothingQuality = "high";
-      tctx.drawImage(originalBitmap, 0, 0, tW, tH);
+  // Chroma-key background so transparent PNG becomes a removable solid
+  const KEY = { r: 255, g: 0, b: 255 };
+  tctx.fillStyle = `rgb(${KEY.r},${KEY.g},${KEY.b})`;
+  tctx.fillRect(0, 0, tW, tH);
 
-      // Convert to a CLEAN binary mask from alpha (prevents "glitchy" traces)
-      const img = tctx.getImageData(0, 0, tW, tH);
-      const d = img.data;
+  tctx.imageSmoothingEnabled = true;
+  tctx.imageSmoothingQuality = "high";
+  tctx.drawImage(originalBitmap, 0, 0, tW, tH);
 
-      const EDGE_A = 55;   // include anti-aliased edge
-      const SOLID_A = 200; // for color sampling
+  // IMPORTANT: flatten semi-transparent edge pixels to reduce "glitchy" speckle paths
+  // - fully transparent => key color
+  // - semi/opaque => force alpha 255 (keeps RGB, removes fringe transparency noise)
+  const img = tctx.getImageData(0, 0, tW, tH);
+  const d = img.data;
+  const TRANSPARENT_A = 8; // <= this treated as transparent
 
-      // sample avg color from solid pixels (so vector inherits logo color)
-      let rs = 0, gs = 0, bs = 0, n = 0;
-      for (let i = 0; i < d.length; i += 4) {
-        const a = d[i + 3];
-        if (a >= SOLID_A) { rs += d[i]; gs += d[i + 1]; bs += d[i + 2]; n++; }
-      }
-      let avg = (n > 0)
-        ? { r: Math.round(rs / n), g: Math.round(gs / n), b: Math.round(bs / n) }
-        : { r: 0, g: 0, b: 0 };
-
-      // If near-white logo, force black so it shows on white paper
-      const lum = 0.2126*avg.r + 0.7152*avg.g + 0.0722*avg.b;
-      if (lum > 235) avg = { r: 0, g: 0, b: 0 };
-
-      // Background key + black foreground
-      const KEY = { r: 255, g: 0, b: 255 };
-      for (let i = 0; i < d.length; i += 4) {
-        const a = d[i + 3];
-        if (a >= EDGE_A) {
-          d[i] = 0; d[i+1] = 0; d[i+2] = 0; d[i+3] = 255;          // FG
-        } else {
-          d[i] = KEY.r; d[i+1] = KEY.g; d[i+2] = KEY.b; d[i+3] = 255; // BG
-        }
-      }
-      tctx.putImageData(img, 0, 0);
-
-      const options = {
-        numberofcolors: 8,
-        colorsampling: 0,
-        colorquantcycles: 1,
-        scale: 1,
-        pathomit: 20,
-        ltres: 1 / clamp(detail, 0.7, 2.0),
-        qtres: 1 / clamp(detail, 0.7, 2.0),
-        rightangleenhance: true
-      };
-
-      let svgStr = ImageTracer.imagedataToSVG(
-        tctx.getImageData(0, 0, tW, tH),
-        options
-      );
-
-      // Strip magenta background shapes
-      svgStr = svgStr
-        .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
-        .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*\/>\s*/gsi, "")
-        .replace(/<[^>]+fill="#ff00ff"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
-        .replace(/<[^>]+fill="#ff00ff"[^>]*\/>\s*/gsi, "");
-
-      const holder = document.createElement("div");
-      holder.style.position = "fixed";
-      holder.style.left = "-99999px";
-      holder.style.top = "-99999px";
-      holder.innerHTML = svgStr.trim();
-      document.body.appendChild(holder);
-
-      const svgEl = holder.querySelector("svg");
-      if (!svgEl) {
-        document.body.removeChild(holder);
-        throw new Error("Trace did not produce an SVG element.");
-      }
-
-      svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
-      svgEl.setAttribute("viewBox", `0 0 ${tW} ${tH}`);
-
-      // Recolor remaining fills to avg color (or black)
-      const fillColor = `rgb(${avg.r},${avg.g},${avg.b})`;
-      svgEl.querySelectorAll("[fill]").forEach(el => {
-        const f = (el.getAttribute("fill") || "").toLowerCase();
-        if (!f || f === "none") return;
-        el.setAttribute("fill", fillColor);
-      });
-
-      svgEl.remove();
-      document.body.removeChild(holder);
-      return svgEl;
+  for (let i = 0; i < d.length; i += 4) {
+    const a = d[i + 3];
+    if (a <= TRANSPARENT_A) {
+      d[i] = KEY.r; d[i + 1] = KEY.g; d[i + 2] = KEY.b; d[i + 3] = 255;
+    } else {
+      d[i + 3] = 255;
     }
+  }
+  tctx.putImageData(img, 0, 0);
 
+  const options = {
+    numberofcolors: clamp(Math.round(colors), 2, 32),
+    colorsampling: 2,        // better for logos/flat art
+    colorquantcycles: 3,     // helps stabilize palette
+    scale: 1,
+    pathomit: 10,            // remove tiny paths/noise
+    ltres: 1 / clamp(detail, 0.6, 2.5),
+    qtres: 1 / clamp(detail, 0.6, 2.5),
+    rightangleenhance: true
+  };
+
+  let svgStr = ImageTracer.imagedataToSVG(
+    tctx.getImageData(0, 0, tW, tH),
+    options
+  );
+
+  // Strip chroma-key background shapes from the SVG
+  svgStr = svgStr
+    .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
+    .replace(/<[^>]+fill="rgb\(\s*255\s*,\s*0\s*,\s*255\s*\)"[^>]*\/>\s*/gsi, "")
+    .replace(/<[^>]+fill="#ff00ff"[^>]*>.*?<\/[^>]+>\s*/gsi, "")
+    .replace(/<[^>]+fill="#ff00ff"[^>]*\/>\s*/gsi, "");
+
+  const holder = document.createElement("div");
+  holder.style.position = "fixed";
+  holder.style.left = "-99999px";
+  holder.style.top = "-99999px";
+  holder.innerHTML = svgStr.trim();
+  document.body.appendChild(holder);
+
+  const svgEl = holder.querySelector("svg");
+  if (!svgEl) {
+    document.body.removeChild(holder);
+    throw new Error("Trace did not produce an SVG element.");
+  }
+
+  // Keep stamp boxed in the tile region
+  svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svgEl.setAttribute("viewBox", `0 0 ${tW} ${tH}`);
+
+  // DO NOT recolor fills (this keeps multi-color!)
+  svgEl.remove();
+  document.body.removeChild(holder);
+  return svgEl;
+}
     async function tileSvgPatternToPdf(pdf, svgStamp, outWIn, outHIn, tileInches, gapIn) {
       const tilePt = tileInches * 72;
       const stepPt = ((tileInches + gapIn) / 1.5) * 72;
